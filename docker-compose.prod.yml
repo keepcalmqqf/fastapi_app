@@ -1,30 +1,36 @@
-version: "3"
 services:
   #  依赖
   mysql:
-    image: mysql
+    image: mysql:8.4
     container_name: mysql
     restart: always
     environment:
-      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_DATABASE: fastapi_db
-    volumes:
-      - ./config/fastapi_db.sql:/docker-entrypoint-initdb.d/fastapi_db.sql
     ports:
       - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
   redis:
-    image: 'redis'
+    image: redis:7
     container_name: redis
     ports:
       - "6379:6379"
   #  应用
   fastapi_app:
-    environment:
-      MODE: "PROD"
+    build: .
     image: fastapi_app
     container_name: app
+    restart: always
+    environment:
+      MODE: "PROD"
+      SECRET_KEY: ${SECRET_KEY}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     ports:
       - "8000:8000"
-    external_links:
-      - mysql:mysql
-      - redis:redis
+    depends_on:
+      - mysql
+      - redis
+
+volumes:
+  mysql_data:

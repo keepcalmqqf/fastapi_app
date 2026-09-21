@@ -12,7 +12,13 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
 # 使用 uv 创建的虚拟环境
 ENV PATH="/app/.venv/bin:$PATH"
+# 非 root 运行
+RUN useradd --create-home appuser && chown -R appuser /app
+USER appuser
 # 暴露端口
 EXPOSE 8000
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
 # 执行命令
-CMD ["fastapi", "run", "main.py"]
+CMD ["fastapi", "run", "app/main.py"]

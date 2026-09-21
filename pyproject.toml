@@ -13,12 +13,38 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "email-validator>=2.0",
+    "pyjwt>=2.14.0",
+    "pwdlib[argon2]>=0.3.1",
+    "alembic>=1.20.0",
+    "slowapi>=0.1.10",
+    "prometheus-fastapi-instrumentator>=8.1.0",
 ]
 
 [dependency-groups]
 dev = [
-    "sqlacodegen>=3.0",
+    "httpx>=0.28.1",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
 ]
 
 [tool.fastapi]
-entrypoint = "main:app"
+entrypoint = "app.main:app"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM"]
+# B008: FastAPI 依赖注入惯用法 Depends() 必须写在参数默认值里
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+ignore_missing_imports = true
+exclude = ["alembic/versions/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
