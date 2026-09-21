@@ -5,6 +5,6 @@ from app.core import result
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/api/info")
 async def index():
     return result.ok(data={"service": "fastapi_app", "docs": "/docs"})

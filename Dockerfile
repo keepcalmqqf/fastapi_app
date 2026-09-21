@@ -1,3 +1,11 @@
+# 前端构建阶段
+FROM node:22-alpine AS frontend
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 # 使用 Python 3.12 环境进行构建
 FROM python:3.12-slim
 # 安装 uv
@@ -10,6 +18,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 # 复制所有文件
 COPY . .
+# 复制前端构建产物（由后端托管）
+COPY --from=frontend /build/dist ./frontend/dist
 # 使用 uv 创建的虚拟环境
 ENV PATH="/app/.venv/bin:$PATH"
 # 非 root 运行

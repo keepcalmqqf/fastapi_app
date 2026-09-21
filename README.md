@@ -1,15 +1,16 @@
 # fastapi_app
 
-基于 FastAPI 的脚手架项目：分层架构、JWT 认证、MySQL + Redis、Alembic 迁移、统一响应格式、全局异常处理、可插拔中间件能力，以及开箱即用的测试与 CI。
+基于 FastAPI + Vue 3 的全栈脚手架项目：分层架构、JWT 认证、MySQL + Redis、Alembic 迁移、统一响应格式、全局异常处理、可插拔中间件能力，以及开箱即用的测试与 CI。
 
 ## 技术栈
 
 - [FastAPI](https://fastapi.tiangolo.com/) + Pydantic v2 + SQLAlchemy 2.0
+- [Vue 3](https://vuejs.org/) + Vite + TypeScript + Pinia + Vue Router + Element Plus（`frontend/`）
 - MySQL 8（SQLAlchemy + PyMySQL）、Redis（`redis.asyncio`）
 - JWT 认证（PyJWT）+ Argon2 密码哈希（pwdlib）
 - Alembic 数据库迁移
 - [uv](https://docs.astral.sh/uv/) 包管理，ruff + mypy + pytest + pre-commit
-- Docker / Docker Compose 部署
+- Docker / Docker Compose 部署（单容器同时托管前端产物与后端 API）
 
 ## 目录结构
 
@@ -36,6 +37,11 @@
 │       ├── rate_limit.py    # 限流（slowapi）
 │       ├── metrics.py       # Prometheus 指标（/metrics）
 │       └── cache.py         # Redis 缓存装饰器 @cached
+├── frontend/                # Vue 3 + Vite + TS 前端（登录/注册/主页）
+│   ├── src/api/             # axios 封装（自动带 token、解包统一响应、401 跳登录）
+│   ├── src/stores/          # Pinia（认证状态，token 持久化）
+│   ├── src/router/          # 路由与登录守卫
+│   └── src/views/           # 页面（Login / Register / Home）
 ├── alembic/                 # 数据库迁移
 └── tests/                   # pytest 测试（SQLite 内存库）
 ```
@@ -74,6 +80,26 @@ uv run fastapi dev
 
 - 接口文档（Swagger UI）：http://127.0.0.1:8000/docs
 - 健康检查：http://127.0.0.1:8000/health
+
+### 5. 运行前端（开发模式）
+
+需要 Node.js ≥ 18：
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173，/auth /user /health 已代理到 127.0.0.1:8000
+```
+
+前端包含登录、注册和主页（展示当前登录用户）。开发期通过 Vite proxy 调后端，无需处理跨域。
+
+### 6. 前端生产构建（由后端托管）
+
+```bash
+cd frontend && npm run build   # 产出 frontend/dist
+```
+
+`frontend/dist` 存在时，FastAPI 启动后自动将其托管为 SPA（未命中的路径回退 `index.html`，API 路由优先匹配不受影响），访问 `http://127.0.0.1:8000/` 即是前端页面。托管目录可通过环境变量 `FRONTEND_DIST_DIR` 覆盖。
 
 ## 接口列表
 
@@ -118,6 +144,7 @@ curl http://127.0.0.1:8000/user/me -H "Authorization: Bearer $TOKEN"
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件插件 |
+| `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA |
 
 ## 可插拔插件
 
@@ -159,7 +186,7 @@ docker compose up -d     # 启动 MySQL + Redis
 ## 部署
 
 ```bash
-# 构建镜像
+# 构建镜像（多阶段构建：前端 npm run build + 后端依赖，单容器同时托管前后端）
 docker build -t fastapi_app .
 
 # 启动完整环境（需先在 .env 中设置 SECRET_KEY 与 MYSQL_PASSWORD）

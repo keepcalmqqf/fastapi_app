@@ -4,11 +4,12 @@
 
 ## 项目概述
 
-`fastapi_app` 是一个基于 FastAPI 的生产级脚手架项目：分层架构、JWT 认证、MySQL + Redis、Alembic 迁移、统一响应格式、全局异常处理、可插拔中间件能力，以及开箱即用的测试与 CI。
+`fastapi_app` 是一个基于 FastAPI + Vue 3 的生产级全栈脚手架项目：分层架构、JWT 认证、MySQL + Redis、Alembic 迁移、统一响应格式、全局异常处理、可插拔中间件能力，以及开箱即用的测试与 CI。前端位于 `frontend/`（Vue 3 + Vite + TS + Pinia + Element Plus），开发期经 Vite proxy 调后端，生产期由 FastAPI 托管 `frontend/dist`。
 
 ### 技术栈
 
 - **框架**：FastAPI ≥ 0.115（`fastapi[standard]`，含 `fastapi` CLI）、Pydantic v2、pydantic-settings
+- **前端**：Vue 3 + Vite + TypeScript + Pinia + Vue Router + Element Plus + Axios（`frontend/`，npm 管理）
 - **数据库**：MySQL 8（SQLAlchemy 2.0 + PyMySQL，同步 Session）、Alembic 迁移
 - **缓存**：Redis（`redis.asyncio`）
 - **认证**：PyJWT（HS256）+ pwdlib Argon2 密码哈希
@@ -29,8 +30,9 @@
 │   │   ├── deps.py          # get_current_user（HTTPBearer）依赖
 │   │   ├── result.py        # 统一响应 Result[T] 泛型与 ok()/failure() 工厂
 │   │   ├── middleware.py    # CORS 中间件（origins 走配置）
+│   │   ├── static.py        # SPAStaticFiles：托管 frontend/dist，404 回退 index.html
 │   │   └── exceptions.py    # 全局异常处理（统一响应，内部细节只进日志）
-│   ├── api/                 # 路由层：auth.py、user.py、health.py、index.py
+│   ├── api/                 # 路由层：auth.py、user.py、health.py、index.py（/api/info）
 │   ├── services/            # 业务逻辑层，事务边界在此（负责 commit）
 │   ├── repositories/        # 数据访问层，只查询/flush，绝不 commit
 │   ├── models/              # SQLAlchemy ORM 模型（__init__.py 统一导入供 Alembic 发现）
@@ -38,10 +40,16 @@
 │   └── plugins/             # 可插拔能力，每个模块实现 setup(app)，按配置开关挂载
 │       ├── __init__.py      # setup_plugins(app)：request_id / rate_limit / metrics
 │       └── cache.py         # Redis 缓存装饰器 @cached(prefix, ttl)（始终可用，不是开关插件）
+├── frontend/                # Vue 3 + Vite + TS 前端
+│   ├── src/api/             # axios 封装（请求带 Bearer token，响应解包 Result，401 跳登录）
+│   ├── src/stores/          # Pinia 认证 store（token 持久化 localStorage）
+│   ├── src/router/          # 路由 + 登录守卫
+│   ├── src/views/           # Login / Register / Home 页面
+│   └── vite.config.ts       # dev proxy：/auth /user /health → 127.0.0.1:8000
 ├── alembic/                 # 数据库迁移（env.py 从 Settings 读连接串）
 ├── tests/                   # pytest（conftest 用 SQLite 内存库覆盖 get_db）
 ├── pyproject.toml           # 依赖、ruff/mypy/pytest 配置、[tool.fastapi] entrypoint
-├── Dockerfile               # python:3.12-slim + uv，非 root 运行，HEALTHCHECK /health
+├── Dockerfile               # 多阶段：node 构建前端 + python:3.12-slim 后端，非 root，HEALTHCHECK /health
 ├── docker-compose.yml       # 开发依赖：MySQL 8.4 + Redis 7
 ├── docker-compose.prod.yml  # 生产：依赖 + 应用容器（MODE=PROD）
 ├── .github/workflows/ci.yml # CI：ruff → pytest → docker build
@@ -80,10 +88,11 @@
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | slowapi 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件 + 日志串联插件 |
+| `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA（API 路由优先匹配） |
 
 ## 构建与运行命令
 
-包管理一律使用 **uv**（不要用 pip 直接装）：
+包管理一律使用 **uv**（不要用 pip 直接装）；前端在 `frontend/` 下使用 **npm**：
 
 ```bash
 docker compose up -d                  # 启动 MySQL + Redis（本地开发依赖）
@@ -91,6 +100,8 @@ uv sync                               # 安装/同步依赖（含 dev 组）
 uv add <package>                      # 添加依赖
 uv run alembic upgrade head           # 初始化/更新数据库表
 uv run fastapi dev                    # 开发模式运行（自动重载，入口由 [tool.fastapi] 指定）
+cd frontend && npm install && npm run dev    # 前端开发（localhost:5173，API 走 Vite proxy）
+cd frontend && npm run build          # 前端构建，产出 frontend/dist（存在时由后端自动托管）
 ```
 
 启动后：Swagger UI 在 `http://127.0.0.1:8000/docs`，健康检查在 `/health`（返回 mysql/redis 连通性）。
@@ -138,9 +149,9 @@ docker compose -f docker-compose.prod.yml up -d          # 需先在 .env 设置
 docker compose -f docker-compose.prod.yml exec fastapi_app alembic upgrade head   # 首次部署执行迁移
 ```
 
-Dockerfile：python:3.12-slim + uv，`uv sync --frozen --no-dev`，非 root 用户运行，HEALTHCHECK 打 `/health`，启动命令 `fastapi run app/main.py`。
+Dockerfile：多阶段构建——`node:22-alpine` 阶段 `npm ci && npm run build` 产出前端 dist，`python:3.12-slim` + uv 阶段 `uv sync --frozen --no-dev` 并复制 dist（由后端托管）；非 root 用户运行，HEALTHCHECK 打 `/health`，启动命令 `fastapi run app/main.py`。
 
-CI（GitHub Actions，push main 或 PR）：`uv sync --frozen` → `ruff check` → `pytest` → `docker build`。依赖版本由 renovate 自动跟踪（`renovate.json`）。
+CI（GitHub Actions，push main 或 PR）：`uv sync --frozen` → `ruff check` → `pytest` → 前端 `npm ci && npm run build` → `docker build`。依赖版本由 renovate 自动跟踪（`renovate.json`）。
 
 ## 安全注意事项
 

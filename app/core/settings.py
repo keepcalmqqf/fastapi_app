@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # CORS（逗号分隔，如 "http://localhost,http://localhost:8080"）
     CORS_ORIGINS: str = "http://localhost,http://localhost:8080"
 
+    # 前端构建产物目录（存在时由后端托管为 SPA）
+    FRONTEND_DIST_DIR: str = "frontend/dist"
+
     # 可插拔能力开关
     ENABLE_RATE_LIMIT: bool = False
     RATE_LIMIT: str = "100/minute"
