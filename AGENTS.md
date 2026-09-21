@@ -45,7 +45,7 @@
 │   ├── src/stores/          # Pinia 认证 store（token 持久化 localStorage）
 │   ├── src/router/          # 路由 + 登录守卫
 │   ├── src/views/           # Login / Register / Home 页面
-│   └── vite.config.ts       # dev proxy：/auth /user /health → 127.0.0.1:8000
+│   └── vite.config.ts       # dev proxy：/auth /user /member /health → 127.0.0.1:8000
 ├── alembic/                 # 数据库迁移（env.py 从 Settings 读连接串）
 ├── tests/                   # pytest（conftest 用 SQLite 内存库覆盖 get_db）
 ├── pyproject.toml           # 依赖、ruff/mypy/pytest 配置、[tool.fastapi] entrypoint
@@ -58,7 +58,7 @@
 
 ### 分层约定（必须遵守）
 
-1. **api 层**：只做参数解析与响应包装，不写业务逻辑。新增路由只需在 `app/api/` 下新建模块并定义模块级 `router = APIRouter(...)` —— `register_routers` 会自动发现并注册，无需改其他文件。
+1. **api 层**：只做参数解析与响应包装，不写业务逻辑。新增路由只需在 `app/api/` 下新建模块并定义模块级 `router = APIRouter(...)` —— `register_routers` 会自动发现并注册，无需改其他文件。可选业务模块（如 `member`）在 `register_routers` 的 `_MODULE_SWITCHES` 中登记开关，关闭时跳过路由注册（模型仍始终导入，保证迁移稳定）。
 2. **service 层**：业务逻辑和事务边界（`db.commit()` 只能出现在这里）。
 3. **repository 层**：纯数据访问，使用 `db.flush()`，**不允许 commit**。
 4. **model 层**：ORM 模型是数据库 schema 的唯一来源；新模型必须在 `app/models/__init__.py` 中导入，Alembic autogenerate 才能发现。
@@ -88,6 +88,7 @@
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | slowapi 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件 + 日志串联插件 |
+| `ENABLE_MEMBER` | `true` | 会员（C 端用户）模块开关，关闭后 `/member` 路由不注册（模型与表结构保留） |
 | `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA（API 路由优先匹配） |
 
 ## 构建与运行命令
@@ -160,3 +161,4 @@ CI（GitHub Actions，push main 或 PR）：`uv sync --frozen` → `ruff check` 
 - JWT 密钥、数据库密码只通过环境变量/`.env` 注入，`.env` 不得提交；`.env.example` 只放开发默认值。
 - 全局异常处理器不会把内部异常细节返回给客户端（只进日志），新增异常处理时保持这一原则。
 - 受保护接口通过 `Depends(get_current_user)` 鉴权；令牌无效、用户不存在或 `is_active=False` 均返回 401。
+- 后台用户与会员（C 端）分表分令牌：JWT 带 `aud` claim（`admin` / `member`），后台接口用 `Depends(get_current_user)`，会员接口用 `Depends(get_current_member)`，两类令牌互不通用（跨用返回 401）。

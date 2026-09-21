@@ -6,4 +6,5 @@ class Base(DeclarativeBase):
 
 
 # 导入所有模型，供 Alembic autogenerate 发现
+from app.models.member import Member  # noqa: E402, F401
 from app.models.user import User  # noqa: E402, F401

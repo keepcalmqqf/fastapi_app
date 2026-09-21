@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     RATE_LIMIT: str = "100/minute"
     ENABLE_METRICS: bool = False
     ENABLE_REQUEST_ID: bool = True
+    ENABLE_MEMBER: bool = True
 
     @model_validator(mode="after")
     def _apply_mode_defaults(self) -> "Settings":
