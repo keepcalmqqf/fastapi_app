@@ -1,0 +1,24 @@
+[project]
+name = "fastapi-app"
+version = "0.1.0"
+description = "FastAPI 脚手架项目"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi[standard]>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy>=2.0",
+    "pymysql>=1.1",
+    "redis>=5.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "email-validator>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "sqlacodegen>=3.0",
+]
+
+[tool.fastapi]
+entrypoint = "main:app"

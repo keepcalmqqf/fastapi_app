@@ -1,14 +1,18 @@
-# 使用 Python3.10.8 环境进行构建
-FROM python:3.10.8
+# 使用 Python 3.12 环境进行构建
+FROM python:3.12-slim
+# 安装 uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # 工作目录
 WORKDIR /app
 # 复制依赖文件
-COPY requirements.txt requirements.txt
-# 安装依赖
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
-# 暴露端口
-EXPOSE 8000
+COPY pyproject.toml uv.lock ./
+# 安装依赖（不含 dev 依赖）
+RUN uv sync --frozen --no-dev --no-install-project
 # 复制所有文件
 COPY . .
+# 使用 uv 创建的虚拟环境
+ENV PATH="/app/.venv/bin:$PATH"
+# 暴露端口
+EXPOSE 8000
 # 执行命令
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0"]
+CMD ["fastapi", "run", "main.py"]

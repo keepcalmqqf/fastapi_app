@@ -1,24 +1,29 @@
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
-from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 
-from controller.index_controller import router
+from config.exception_handler import register_exception_handlers
 from config.middleware import cors_middleware
-from config.redis import register_redis
-from util import result
-from controller.user_controller import userRouter
+from config.redis import create_redis
+from controller.index_controller import router as index_router
+from controller.user_controller import router as user_router
 
-app = FastAPI(title="脚手架项目")
+logging.basicConfig(level=logging.INFO)
 
 
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request, exc):
-    return JSONResponse(content=result.failure(message=exc.errors()[0]["msg"]))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.redis = create_redis()
+    yield
+    await app.state.redis.aclose()
 
+
+app = FastAPI(title="脚手架项目", lifespan=lifespan)
+
+register_exception_handlers(app)
 
 cors_middleware(app)
 
-register_redis(app)
-
-app.include_router(router=router, include_in_schema=False)
-app.include_router(userRouter, tags=["用户"])
+app.include_router(router=index_router, include_in_schema=False)
+app.include_router(router=user_router)
