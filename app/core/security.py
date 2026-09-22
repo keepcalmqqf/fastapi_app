@@ -20,10 +20,9 @@ def create_access_token(
     subject: str, audience: str = "admin", expires_minutes: int | None = None
 ) -> str:
     """签发访问令牌，audience 区分调用方身份（admin=后台用户，member=会员）。"""
-    expire = datetime.now(timezone.utc) + timedelta(
-        minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-    payload = {"sub": subject, "aud": audience, "exp": expire}
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {"sub": subject, "aud": audience, "exp": expire, "iat": now}
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 

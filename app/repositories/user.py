@@ -1,8 +1,12 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import User
 from app.schemas.user import CreateUser
+
+
+def count_users(db: Session) -> int:
+    return db.scalar(select(func.count()).select_from(User)) or 0
 
 
 def get_user_by_id(db: Session, user_id: int) -> User | None:

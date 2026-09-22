@@ -8,8 +8,13 @@ RUN npm run build
 
 # 使用 Python 3.12 环境进行构建
 FROM python:3.12-slim
-# 安装 uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# 安装 tzdata 并固定时区（slim 镜像默认 UTC；apt 安装对已存在包为幂等操作）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+ENV TZ=Asia/Shanghai
+# 安装 uv（pin 具体版本保证构建可重现）
+COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
 # 工作目录
 WORKDIR /app
 # 复制依赖文件

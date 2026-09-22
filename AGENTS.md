@@ -47,7 +47,7 @@
 │   ├── src/views/           # Login / Register / Home 页面
 │   └── vite.config.ts       # dev proxy：/auth /user /member /health → 127.0.0.1:8000
 ├── alembic/                 # 数据库迁移（env.py 从 Settings 读连接串）
-├── tests/                   # pytest（conftest 用 SQLite 内存库覆盖 get_db）
+├── tests/                   # pytest（conftest 用 SQLite 内存库覆盖 get_db，FakeRedis 替换 create_redis）
 ├── pyproject.toml           # 依赖、ruff/mypy/pytest 配置、[tool.fastapi] entrypoint
 ├── Dockerfile               # 多阶段：node 构建前端 + python:3.12-slim 后端，非 root，HEALTHCHECK /health
 ├── docker-compose.yml       # 开发依赖：MySQL 8.4 + Redis 7
@@ -82,9 +82,10 @@
 | --- | --- | --- |
 | `MODE` | `DEV` | `PROD` 时强制要求显式设置 `SECRET_KEY` 和 `MYSQL_PASSWORD`，否则启动即报错 |
 | `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE` | 127.0.0.1/3306/root/123456/fastapi_db | PROD 下 host 默认 docker 服务名 `mysql` |
-| `REDIS_HOST`/`REDIS_PORT` | 127.0.0.1/6379 | PROD 下默认 `redis` |
-| `SECRET_KEY` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_ALGORITHM` | 开发默认值 / 1440 / HS256 | JWT 签名配置 |
-| `CORS_ORIGINS` | `http://localhost,http://localhost:8080` | 逗号分隔 |
+| `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` | 127.0.0.1/6379/无 | PROD 下 host 默认 `redis` |
+| `SECRET_KEY` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_ALGORITHM` | 开发默认值 / 1440 / HS256 | JWT 签名配置；`JWT_ALGORITHM` 仅允许 HS256/HS384/HS512，令牌含 `iat`/`exp`/`aud` |
+| `ENABLE_DOCS` | 未设置（DEV 开、PROD 关） | API 文档（`/docs`、`/openapi.json`、`/redoc`）开关，显式设置则以设置为准 |
+| `CORS_ORIGINS` | `http://localhost,http://localhost:8080` | 逗号分隔（methods 固定 GET/POST/PUT/DELETE/OPTIONS，headers 固定 Authorization/Content-Type/X-Request-ID） |
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | slowapi 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件 + 日志串联插件 |
@@ -105,7 +106,13 @@ cd frontend && npm install && npm run dev    # 前端开发（localhost:5173，A
 cd frontend && npm run build          # 前端构建，产出 frontend/dist（存在时由后端自动托管）
 ```
 
-启动后：Swagger UI 在 `http://127.0.0.1:8000/docs`，健康检查在 `/health`（返回 mysql/redis 连通性）。
+启动后：Swagger UI 在 `http://127.0.0.1:8000/docs`（PROD 默认关闭），健康检查在 `/health`（返回 mysql/redis 连通性；组件全部正常时 200 + `status=ok`，任一组件 down 时 HTTP 503 + `status=degraded`，body 均为 Result 格式）。
+
+## 关键接口语义
+
+- `POST /user/create_user`（空库自举）：users 表为空时无需 token 即可创建首个管理员；表非空时必须携带有效 admin Bearer token，否则 401。密码策略：8-64 位且同时包含字母和数字；name 2-32 位、去空白后非空；email 统一 `lower().strip()` 归一化。
+- 登录（`/auth/login`、`/member/login`）：账号不存在、密码错误、账号禁用（`is_active=False`）一律 401，不泄露账号状态；用户不存在时服务端做 dummy 哈希校验拉平响应耗时。
+- 邮箱撞唯一约束（含并发）返回 409。
 
 ## 代码风格
 
@@ -124,8 +131,10 @@ uv run pytest        # 测试目录 tests/，无需 MySQL/Redis
 ```
 
 - `tests/conftest.py` 用 SQLite 内存库（`StaticPool`）通过 `app.dependency_overrides` 覆盖 `get_db`；每个测试后自动清空所有表（autouse fixture）。
+- Redis 由 conftest 中的内存 `FakeRedis` 隔离（autouse monkeypatch 替换 `app.main.create_redis`，`/health` 使用的引擎同步替换为测试库），测试不依赖真实 MySQL/Redis；`broken_redis` fixture 可将 Redis 置为故障态，供 degraded 用例使用。
 - 测试通过 `TestClient`（`client` fixture）走完整 HTTP 链路，覆盖认证、校验错误、统一响应格式等。
 - 新增功能应在 `tests/` 下补充对应 API 测试，断言统一响应的 `code`/`data` 字段。
+- pytest 默认带 `--cov=app`（addopts 已配置，coverage 门槛见 CI 的 `--cov-fail-under`）。
 
 ## 数据库迁移
 
@@ -140,7 +149,7 @@ uv run alembic upgrade head
 
 ## 插件开发约定
 
-`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter）、`rate_limit`（slowapi，超限返回统一格式 429）、`metrics`（Prometheus `/metrics`）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
+`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter；X-Request-ID 仅接受 `^[A-Za-z0-9_-]{1,64}$`，非法值自动生成 uuid）、`rate_limit`（slowapi，超限返回统一格式 429）、`metrics`（Prometheus `/metrics`）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
 
 ## 部署
 
@@ -152,7 +161,7 @@ docker compose -f docker-compose.prod.yml exec fastapi_app alembic upgrade head 
 
 Dockerfile：多阶段构建——`node:22-alpine` 阶段 `npm ci && npm run build` 产出前端 dist，`python:3.12-slim` + uv 阶段 `uv sync --frozen --no-dev` 并复制 dist（由后端托管）；非 root 用户运行，HEALTHCHECK 打 `/health`，启动命令 `fastapi run app/main.py`。
 
-CI（GitHub Actions，push main 或 PR）：`uv sync --frozen` → `ruff check` → `pytest` → 前端 `npm ci && npm run build` → `docker build`。依赖版本由 renovate 自动跟踪（`renovate.json`）。
+CI（GitHub Actions，push main 或 PR）：`uv sync --frozen` → `ruff check` + `ruff format --check` → `mypy app tests` → `pytest --cov=app --cov-fail-under=82` → 前端 `npm ci && npm run build` → `docker build`。依赖版本由 renovate 自动跟踪（`renovate.json`）。
 
 ## 安全注意事项
 

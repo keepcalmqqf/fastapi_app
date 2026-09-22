@@ -29,7 +29,7 @@ const router = createRouter({
 router.beforeEach((to) => {
   const token = localStorage.getItem('access_token')
   if (to.meta.requiresAuth && !token) {
-    return { name: 'login' }
+    return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (token && (to.name === 'login' || to.name === 'register')) {
     return { name: 'home' }

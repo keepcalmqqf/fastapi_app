@@ -3,34 +3,73 @@ services:
   mysql:
     image: mysql:8.4
     container_name: mysql
-    restart: always
+    restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_DATABASE: fastapi_db
+    # 数据库端口只绑定本机，不暴露到公网；对外仅开放应用 8000 端口
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
   redis:
     image: redis:7
     container_name: redis
+    restart: unless-stopped
+    # 启用 AUTH 密码（需在 .env 中设置 REDIS_PASSWORD）
+    command: ["redis-server", "--requirepass", "$${REDIS_PASSWORD}"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "$${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
   #  应用
   fastapi_app:
     build: .
     image: fastapi_app
     container_name: app
-    restart: always
+    restart: unless-stopped
     environment:
       MODE: "PROD"
       SECRET_KEY: ${SECRET_KEY}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      # 文档开关：PROD 模式默认关闭 /docs 与 /openapi.json，如需临时开启改为 "true"
+      # ENABLE_DOCS: "true"
     ports:
       - "8000:8000"
     depends_on:
-      - mysql
-      - redis
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   mysql_data:
+  redis_data:

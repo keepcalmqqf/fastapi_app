@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 
 const formRef = ref<FormInstance>()
@@ -20,7 +21,10 @@ const rules: FormRules = {
     { required: true, message: '请输入邮箱', trigger: 'blur' },
     { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
   ],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+  password: [
+    { required: true, message: '请输入密码', trigger: 'blur' },
+    { min: 8, max: 64, message: '长度需为 8-64 位', trigger: 'blur' },
+  ],
 }
 
 async function onSubmit() {
@@ -31,7 +35,9 @@ async function onSubmit() {
     try {
       await authStore.login(form.email, form.password)
       ElMessage.success('登录成功')
-      router.push('/')
+      // 支持 401 跳转时携带的 redirect 回跳参数
+      const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+      router.push(redirect)
     } finally {
       loading.value = false
     }

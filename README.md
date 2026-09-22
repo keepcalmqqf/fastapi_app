@@ -78,8 +78,8 @@ uv run fastapi dev
 
 启动后访问：
 
-- 接口文档（Swagger UI）：http://127.0.0.1:8000/docs
-- 健康检查：http://127.0.0.1:8000/health
+- 接口文档（Swagger UI）：http://127.0.0.1:8000/docs（`ENABLE_DOCS` 未设置时 DEV 开、PROD 关）
+- 健康检查：http://127.0.0.1:8000/health（组件全部正常 200 + `status=ok`；任一组件 down 503 + `status=degraded`，body 均为统一 Result 格式）
 
 ### 5. 运行前端（开发模式）
 
@@ -105,11 +105,13 @@ cd frontend && npm run build   # 产出 frontend/dist
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/health` | 健康检查（MySQL + Redis 连通性） |
-| POST | `/auth/login` | 登录，返回 JWT |
-| GET | `/user/get_user?user_id=1` | 通过用户 id 获取用户 |
-| POST | `/user/create_user` | 创建用户（密码 Argon2 哈希入库） |
+| GET | `/health` | 健康检查（MySQL + Redis 连通性，组件 down 时 503） |
+| POST | `/auth/login` | 登录，返回 JWT（账号不存在/密码错误/已禁用一律 401） |
+| GET | `/user/get_user?user_id=1` | 通过用户 id 获取用户（需 admin Bearer token） |
+| POST | `/user/create_user` | 创建用户；空库时首个管理员可无 token 自举，表非空需 admin token；密码 Argon2 哈希入库 |
 | GET | `/user/me` | 获取当前登录用户（需 Bearer token） |
+
+注册/创建用户的密码策略：8-64 位且同时包含字母和数字；name/nickname 2-32 位、去空白后非空；email 统一小写归一化。
 
 所有接口返回统一格式（路由声明了 `response_model`，Swagger 可见真实结构）：
 
@@ -122,7 +124,7 @@ cd frontend && npm run build   # 产出 frontend/dist
 ```bash
 TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"email":"zhangsan@test.com","password":"123456"}' | jq -r .data.access_token)
+  -d '{"email":"zhangsan@test.com","password":"abcd1234"}' | jq -r .data.access_token)
 
 curl http://127.0.0.1:8000/user/me -H "Authorization: Bearer $TOKEN"
 ```
@@ -137,9 +139,11 @@ curl http://127.0.0.1:8000/user/me -H "Authorization: Bearer $TOKEN"
 | `MYSQL_HOST` / `MYSQL_PORT` | `127.0.0.1` / `3306` | MySQL 地址（PROD 默认 docker 服务名 `mysql`） |
 | `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / `123456` | MySQL 账号 |
 | `MYSQL_DATABASE` | `fastapi_db` | 数据库名 |
-| `REDIS_HOST` / `REDIS_PORT` | `127.0.0.1` / `6379` | Redis 地址（PROD 默认 `redis`） |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | `127.0.0.1` / `6379` / 无 | Redis 地址（PROD 默认 `redis`） |
 | `SECRET_KEY` | 开发默认值 | JWT 签名密钥，PROD 必须显式设置 |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | 令牌有效期 |
+| `JWT_ALGORITHM` | `HS256` | 仅允许 HS256/HS384/HS512；令牌含 `iat`/`exp`/`aud`（admin/member 隔离） |
+| `ENABLE_DOCS` | 未设置（DEV 开、PROD 关） | API 文档开关，显式设置则以设置为准 |
 | `CORS_ORIGINS` | `http://localhost,...` | 允许的跨域来源，逗号分隔 |
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
@@ -155,9 +159,9 @@ curl http://127.0.0.1:8000/user/me -H "Authorization: Bearer $TOKEN"
 ```python
 from app.plugins.cache import cached
 
+
 @cached("user", ttl=300)
-async def heavy_query(user_id: int):
-    ...
+async def heavy_query(user_id: int): ...
 ```
 
 ## 数据库迁移

@@ -21,10 +21,15 @@ jobs:
         run: uv sync --frozen
 
       - name: Ruff
-        run: uv run ruff check .
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Mypy
+        run: uv run mypy app tests
 
       - name: Pytest
-        run: uv run pytest
+        run: uv run pytest --cov=app --cov-fail-under=82
 
       - name: Set up Node
         uses: actions/setup-node@v4

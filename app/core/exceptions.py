@@ -5,7 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
-from starlette.exceptions import HTTPException
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core import result
 
@@ -15,17 +15,20 @@ logger = logging.getLogger("fastapi_app")
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg", "")} for e in exc.errors()]
         return JSONResponse(
             status_code=422,
-            content=result.failure(code=422, message=exc.errors()[0]["msg"]).model_dump(),
+            content=result.Result(
+                code=422, data={"errors": errors}, message="请求参数校验失败"
+            ).model_dump(),
         )
 
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=result.failure(code=exc.status_code, message=str(exc.detail)).model_dump(),
-        )
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        content = result.failure(code=exc.status_code, message=str(exc.detail)).model_dump()
+        if exc.headers:
+            return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
+        return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RedisError)
     async def redis_exception_handler(request: Request, exc: RedisError):

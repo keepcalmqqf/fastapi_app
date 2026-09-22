@@ -25,6 +25,7 @@ dev = [
     "httpx>=0.28.1",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "ruff>=0.16.8",
 ]
 
@@ -48,3 +49,14 @@ exclude = ["alembic/versions/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--cov=app", "--cov-report=term-missing"]
+
+[tool.coverage.run]
+source = ["app"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "def __repr__",
+]

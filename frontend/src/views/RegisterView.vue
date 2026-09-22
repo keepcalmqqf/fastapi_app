@@ -15,7 +15,9 @@ const form = reactive({
   password: '',
 })
 
-// 与后端校验规则保持一致：name 2-10 字符，password 6-20 位
+// 与后端校验规则保持一致：name 2-10 字符，password 8-64 位且同时包含字母和数字
+const PASSWORD_PATTERN = /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/
+
 const rules: FormRules = {
   name: [
     { required: true, message: '请输入昵称', trigger: 'blur' },
@@ -27,7 +29,11 @@ const rules: FormRules = {
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 6, max: 20, message: '长度需为 6-20 位', trigger: 'blur' },
+    {
+      pattern: PASSWORD_PATTERN,
+      message: '密码需为 8-64 位，且同时包含字母和数字',
+      trigger: 'blur',
+    },
   ],
 }
 
@@ -40,6 +46,8 @@ async function onSubmit() {
       await apiRegister(form.name, form.email, form.password)
       ElMessage.success('注册成功，请登录')
       router.push('/login')
+    } catch {
+      // 失败提示（如 401 注册已关闭 / 409 邮箱已存在）已由响应拦截器统一展示
     } finally {
       loading.value = false
     }
@@ -51,6 +59,7 @@ async function onSubmit() {
   <div class="register-page">
     <el-card class="register-card">
       <h2 class="title">注册账号</h2>
+      <p class="hint">首次部署时，注册用于初始化管理员账号；初始化完成后注册入口将关闭，请直接登录。</p>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
         <el-form-item label="昵称" prop="name">
           <el-input v-model="form.name" placeholder="2-10 个字符" clearable />
@@ -62,7 +71,7 @@ async function onSubmit() {
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="6-20 位"
+            placeholder="8-64 位，须包含字母和数字"
             show-password
             @keyup.enter="onSubmit"
           />
@@ -95,6 +104,13 @@ async function onSubmit() {
   margin: 0 0 24px;
   text-align: center;
   font-size: 20px;
+}
+
+.hint {
+  margin: -12px 0 20px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #909399;
 }
 
 .submit-btn {

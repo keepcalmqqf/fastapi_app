@@ -1,7 +1,18 @@
 .venv
 .git
+.github
 __pycache__
 *.pyc
 
+# 测试与本地缓存
+tests
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# 本地环境变量（.env.example 保留，供部署参考）
+.env
+
+# 前端（node 阶段自行构建 dist）
 frontend/node_modules
 frontend/dist

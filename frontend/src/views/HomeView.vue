@@ -1,13 +1,25 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useAuthStore } from '../stores/auth'
 
 const authStore = useAuthStore()
 
-onMounted(() => {
-  // 进入首页时拉取当前用户信息
-  authStore.fetchMe()
-})
+const loading = ref(true)
+const error = ref<string | null>(null)
+
+async function loadMe() {
+  loading.value = true
+  error.value = null
+  try {
+    await authStore.fetchMe()
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '加载用户信息失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(loadMe)
 </script>
 
 <template>
@@ -30,6 +42,16 @@ onMounted(() => {
           </el-tag>
         </el-descriptions-item>
       </el-descriptions>
+      <el-result
+        v-else-if="error"
+        icon="error"
+        title="加载失败"
+        :sub-title="error"
+      >
+        <template #extra>
+          <el-button type="primary" @click="loadMe">重试</el-button>
+        </template>
+      </el-result>
       <el-skeleton v-else :rows="4" animated />
       <p class="intro">
         本项目是一个基于 FastAPI + Vue 3 的生产级全栈脚手架，内置 JWT 认证、统一响应格式、

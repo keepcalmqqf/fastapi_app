@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.core import result
@@ -26,7 +27,12 @@ async def health(request: Request):
         components["redis"] = "down"
 
     healthy = all(v == "ok" for v in components.values())
-    return result.ok(
-        data={"status": "ok" if healthy else "degraded", "components": components},
-        message="服务正常" if healthy else "部分依赖不可用",
+    status_code = 200 if healthy else 503
+    return JSONResponse(
+        status_code=status_code,
+        content=result.ok(
+            code=status_code,
+            data={"status": "ok" if healthy else "degraded", "components": components},
+            message="服务正常" if healthy else "部分依赖不可用",
+        ).model_dump(),
     )

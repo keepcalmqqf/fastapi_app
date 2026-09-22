@@ -6,6 +6,9 @@
 .ruff_cache
 .mypy_cache
 .pytest_cache
+.coverage
+.coverage.*
+htmlcov
 
 # 前端
 frontend/node_modules

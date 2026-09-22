@@ -3,8 +3,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api import register_routers
+from app.core.database import engine
 from app.core.exceptions import register_exception_handlers
 from app.core.middleware import cors_middleware
 from app.core.redis import create_redis
@@ -23,12 +25,21 @@ async def lifespan(app: FastAPI):
     set_redis(redis)
     yield
     await redis.aclose()
+    engine.dispose()
 
 
-app = FastAPI(title="脚手架项目", lifespan=lifespan)
+_enable_docs = settings.docs_enabled
+app = FastAPI(
+    title="脚手架项目",
+    lifespan=lifespan,
+    docs_url="/docs" if _enable_docs else None,
+    openapi_url="/openapi.json" if _enable_docs else None,
+    redoc_url="/redoc" if _enable_docs else None,
+)
 
 register_exception_handlers(app)
 cors_middleware(app)
+app.add_middleware(GZipMiddleware)
 setup_plugins(app)
 register_routers(app)
 

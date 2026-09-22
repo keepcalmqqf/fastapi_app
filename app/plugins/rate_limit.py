@@ -10,9 +10,7 @@ from app.core.settings import settings
 
 
 def setup(app: FastAPI) -> None:
-    limiter = Limiter(
-        key_func=get_remote_address, default_limits=[settings.RATE_LIMIT]
-    )
+    limiter = Limiter(key_func=get_remote_address, default_limits=[settings.RATE_LIMIT])
     app.state.limiter = limiter
     app.add_middleware(SlowAPIMiddleware)
 
