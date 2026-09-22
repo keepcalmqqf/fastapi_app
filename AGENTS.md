@@ -44,7 +44,7 @@
 │   ├── src/api/             # axios 封装（请求带 Bearer token，响应解包 Result，401 跳登录）
 │   ├── src/stores/          # Pinia 认证 store（token 持久化 localStorage）
 │   ├── src/router/          # 路由 + 登录守卫
-│   ├── src/views/           # Login / Register / Home 页面
+│   ├── src/views/           # Login / Register / Home / 用户管理 / 会员管理（只读列表）页面
 │   └── vite.config.ts       # dev proxy：/auth /user /member /health → 127.0.0.1:8000
 ├── alembic/                 # 数据库迁移（env.py 从 Settings 读连接串）
 ├── tests/                   # pytest（conftest 用 SQLite 内存库覆盖 get_db，FakeRedis 替换 create_redis）

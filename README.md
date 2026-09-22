@@ -41,7 +41,7 @@
 │   ├── src/api/             # axios 封装（自动带 token、解包统一响应、401 跳登录）
 │   ├── src/stores/          # Pinia（认证状态，token 持久化）
 │   ├── src/router/          # 路由与登录守卫
-│   └── src/views/           # 页面（Login / Register / Home）
+│   └── src/views/           # Login / Register / Home / 用户管理 / 会员管理（只读列表）页面
 ├── alembic/                 # 数据库迁移
 └── tests/                   # pytest 测试（SQLite 内存库）
 ```
