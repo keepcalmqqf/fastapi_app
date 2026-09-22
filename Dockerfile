@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # 使用 Python 3.12 环境进行构建
-FROM python:3.12-slim
+FROM python:3.14-slim
 # 安装 tzdata 并固定时区（slim 镜像默认 UTC；apt 安装对已存在包为幂等操作）
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata \
