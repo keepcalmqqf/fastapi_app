@@ -14,7 +14,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 ENV TZ=Asia/Shanghai
 # 安装 uv（pin 具体版本保证构建可重现）
-COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.17 /uv /uvx /bin/
 # 工作目录
 WORKDIR /app
 # 复制依赖文件
