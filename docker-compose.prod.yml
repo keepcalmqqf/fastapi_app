@@ -2,7 +2,6 @@ services:
   #  依赖
   mysql:
     image: mysql:8.4
-    container_name: mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}
@@ -25,7 +24,6 @@ services:
         max-file: "3"
   redis:
     image: redis:7
-    container_name: redis
     restart: unless-stopped
     # 启用 AUTH 密码（需在 .env 中设置 REDIS_PASSWORD）
     command: ["redis-server", "--requirepass", "$${REDIS_PASSWORD}"]
@@ -48,7 +46,6 @@ services:
   fastapi_app:
     build: .
     image: fastapi_app
-    container_name: app
     restart: unless-stopped
     environment:
       MODE: "PROD"
