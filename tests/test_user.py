@@ -150,8 +150,8 @@ def test_get_user_not_found(client):
         params={"user_id": 99999},
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 200
-    assert resp.json()["data"] is None
+    assert resp.status_code == 404
+    assert resp.json()["code"] == 404
 
 
 def test_password_is_hashed(client):
@@ -200,7 +200,7 @@ def test_me_without_token(client):
 
 def test_expired_token_rejected(client):
     _create_first_admin(client)
-    expired = create_access_token(subject="1", expires_minutes=-1)
+    expired = create_access_token(subject="1", aud="admin", expires_minutes=-1)
     resp = client.get("/user/me", headers={"Authorization": f"Bearer {expired}"})
     assert resp.status_code == 401
 
@@ -214,3 +214,150 @@ def test_forged_token_rejected(client):
     )
     resp = client.get("/user/me", headers={"Authorization": f"Bearer {forged}"})
     assert resp.status_code == 401
+
+
+# ---------- 分页 ----------
+
+
+def _create_users(client, token: str, count: int) -> None:
+    for i in range(count):
+        resp = client.post(
+            "/user/create_user",
+            json={
+                "name": f"用户{i}",
+                "email": f"user{i}@test.com",
+                "password": "abcd1234",
+                "is_active": True,
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200, resp.text
+
+
+def test_list_users_pagination(client):
+    """/user/list 返回 Page 结构：total/items/page/page_size 正确，分页生效。"""
+    token = _create_first_admin(client)
+    _create_users(client, token, 3)  # 共 4 个用户
+
+    resp = client.get("/user/list", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total"] == 4
+    assert data["page"] == 1
+    assert data["page_size"] == 20
+    assert len(data["items"]) == 4
+
+    resp = client.get(
+        "/user/list",
+        params={"page": 2, "page_size": 3},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total"] == 4
+    assert data["page"] == 2
+    assert data["page_size"] == 3
+    assert len(data["items"]) == 1
+
+
+def test_list_users_page_size_bounds(client):
+    """page_size 上限 100，越界 422；page 从 1 开始。"""
+    token = _create_first_admin(client)
+    resp = client.get(
+        "/user/list", params={"page_size": 101}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 422
+    resp = client.get(
+        "/user/list", params={"page": 0}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 422
+
+
+def test_list_users_requires_admin(client):
+    _create_first_admin(client)
+    client.cookies.clear()  # 不带任何凭证（Cookie jar 会记住登录种下的 Cookie）
+    resp = client.get("/user/list")
+    assert resp.status_code == 401
+
+
+# ---------- PATCH / DELETE ----------
+
+
+def _create_one_user(client, token: str, email: str = "lisi@test.com") -> dict:
+    resp = client.post(
+        "/user/create_user",
+        json={"name": "李四", "email": email, "password": "abcd1234", "is_active": True},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_update_user_name(client):
+    token = _create_first_admin(client)
+    user = _create_one_user(client, token)
+    resp = client.patch(
+        f"/user/{user['id']}",
+        json={"name": "李小四"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["name"] == "李小四"
+
+
+def test_update_user_disable_blocks_login(client):
+    """停用用户后其登录返回 401。"""
+    token = _create_first_admin(client)
+    user = _create_one_user(client, token)
+    resp = client.patch(
+        f"/user/{user['id']}",
+        json={"is_active": False},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["is_active"] is False
+
+    login = client.post("/auth/login", json={"email": "lisi@test.com", "password": "abcd1234"})
+    assert login.status_code == 401
+
+
+def test_update_user_not_found(client):
+    token = _create_first_admin(client)
+    resp = client.patch(
+        "/user/99999", json={"name": "不存在"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_user_soft_blocks_login_and_lookup(client):
+    """删除用户（软删）后：该用户登录 401，get_user 404。"""
+    token = _create_first_admin(client)
+    user = _create_one_user(client, token)
+
+    resp = client.delete(f"/user/{user['id']}", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+
+    login = client.post("/auth/login", json={"email": "lisi@test.com", "password": "abcd1234"})
+    assert login.status_code == 401
+
+    resp = client.get(
+        "/user/get_user",
+        params={"user_id": user["id"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404
+
+
+def test_delete_user_not_found(client):
+    token = _create_first_admin(client)
+    resp = client.delete("/user/99999", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 404
+
+
+def test_delete_self_forbidden(client):
+    token = _create_first_admin(client)
+    me = client.get("/user/me", headers={"Authorization": f"Bearer {token}"})
+    resp = client.delete(
+        f"/user/{me.json()['data']['id']}", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 400

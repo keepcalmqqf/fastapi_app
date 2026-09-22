@@ -2,10 +2,10 @@ from sqlalchemy import Boolean, Integer, String, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base
-from app.models.base import TimestampMixin
+from app.models.base import SoftDeleteMixin, TimestampMixin
 
 
-class Member(Base, TimestampMixin):
+class Member(Base, TimestampMixin, SoftDeleteMixin):
     """会员（C 端用户），与后台用户 User 分表、分令牌。"""
 
     __tablename__ = "member"

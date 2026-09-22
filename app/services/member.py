@@ -15,11 +15,11 @@ def register(db: Session, data: RegisterMember) -> Member | None:
     """注册会员；邮箱已存在（含并发撞唯一约束）时返回 None。事务边界在本层。"""
     if member_repo.get_member_by_email(db, data.email) is not None:
         return None
-    member = member_repo.create_member(db, data, security.hash_password(data.password))
     try:
+        member = member_repo.create_member(db, data, security.hash_password(data.password))
         db.commit()
     except IntegrityError:
-        # 并发注册撞唯一约束：回滚并降级为「已存在」，由 api 层转为 409
+        # 并发注册/软删重建撞唯一约束：flush 或 commit 阶段都可能抛出，统一回滚降级为「已存在」
         db.rollback()
         return None
     return member
@@ -35,3 +35,20 @@ def authenticate(db: Session, email: str, password: str) -> Member | None:
     if member is None or not member.is_active:
         return None
     return member
+
+
+def list_members(db: Session, page: int, page_size: int) -> tuple[list[Member], int]:
+    return member_repo.list_members(db, page, page_size)
+
+
+def update_member(db: Session, member: Member, data: dict) -> Member:
+    """更新会员信息（只落非 None 字段）。事务边界在本层。"""
+    updated = member_repo.update_member(db, member, data)
+    db.commit()
+    return updated
+
+
+def delete_member(db: Session, member: Member) -> None:
+    """软删除会员。事务边界在本层。"""
+    member_repo.soft_delete_member(db, member)
+    db.commit()

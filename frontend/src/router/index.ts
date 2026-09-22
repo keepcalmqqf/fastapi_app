@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import type { RouteRecordRaw } from 'vue-router'
+import { useAuthStore } from '../stores/auth'
 
 const routes: RouteRecordRaw[] = [
   {
@@ -25,13 +26,16 @@ const router = createRouter({
   routes,
 })
 
-// 全局前置守卫：未登录访问受保护页面跳转登录页；已登录访问登录/注册页跳回首页
-router.beforeEach((to) => {
-  const token = localStorage.getItem('access_token')
-  if (to.meta.requiresAuth && !token) {
+// 全局前置守卫：先恢复会话，未登录访问受保护页面跳转登录页；已登录访问登录/注册页跳回首页
+router.beforeEach(async (to) => {
+  const authStore = useAuthStore()
+  if (!authStore.restored) {
+    await authStore.restore()
+  }
+  if (to.meta.requiresAuth && !authStore.user) {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
-  if (token && (to.name === 'login' || to.name === 'register')) {
+  if (authStore.user && (to.name === 'login' || to.name === 'register')) {
     return { name: 'home' }
   }
   return true

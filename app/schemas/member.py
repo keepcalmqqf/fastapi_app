@@ -32,11 +32,25 @@ class RegisterMember(BaseModel):
     _check_nickname = field_validator("nickname")(_validate_non_blank)
 
 
+class UpdateMember(BaseModel):
+    """会员更新入参：全部可选，None 表示不修改；nickname 沿用注册的校验规则。"""
+
+    nickname: str | None = Field(default=None, min_length=2, max_length=32)
+
+    _check_nickname = field_validator("nickname")(_validate_non_blank)
+
+
 class MemberLogin(BaseModel):
     email: EmailStr
     password: str = Field(max_length=64)
 
     _normalize_email = field_validator("email", mode="before")(_normalize_email)
+
+
+class RefreshTokenIn(BaseModel):
+    """refresh 端点的 body 兜底：cookie 缺失时从这里取 refresh_token。"""
+
+    refresh_token: str | None = None
 
 
 class MemberOut(BaseModel):

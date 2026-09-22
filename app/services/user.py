@@ -21,14 +21,18 @@ def needs_bootstrap(db: Session) -> bool:
 
 
 def create_user(db: Session, data: CreateUser) -> User | None:
-    """创建用户；邮箱已存在（含并发撞唯一约束）时返回 None。事务边界在本层。"""
+    """创建用户；邮箱已存在（含并发撞唯一约束）时返回 None。事务边界在本层。
+
+    注意：软删除不释放邮箱——已软删账号的邮箱在 repository 预检查中不可见，
+    但唯一约束仍在，最终由 IntegrityError 兜底转 409。
+    """
     if user_repo.get_user_by_email(db, data.email) is not None:
         return None
-    user = user_repo.create_user(db, data, security.hash_password(data.password))
     try:
+        user = user_repo.create_user(db, data, security.hash_password(data.password))
         db.commit()
     except IntegrityError:
-        # 并发注册撞唯一约束：回滚并降级为「已存在」，由 api 层转为 409
+        # 并发注册/软删重建撞唯一约束：flush 或 commit 阶段都可能抛出，统一回滚降级为「已存在」
         db.rollback()
         return None
     return user
@@ -44,3 +48,20 @@ def authenticate(db: Session, email: str, password: str) -> User | None:
     if user is None or not user.is_active:
         return None
     return user
+
+
+def list_users(db: Session, page: int, page_size: int) -> tuple[list[User], int]:
+    return user_repo.list_users(db, page, page_size)
+
+
+def update_user(db: Session, user: User, data: dict) -> User:
+    """更新用户信息（只落非 None 字段）。事务边界在本层。"""
+    updated = user_repo.update_user(db, user, data)
+    db.commit()
+    return updated
+
+
+def delete_user(db: Session, user: User) -> None:
+    """软删除用户。事务边界在本层。"""
+    user_repo.soft_delete_user(db, user)
+    db.commit()

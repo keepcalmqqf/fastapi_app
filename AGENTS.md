@@ -27,7 +27,7 @@
 │   │   ├── database.py      # SQLAlchemy 引擎、SessionLocal、get_db 依赖
 │   │   ├── redis.py         # create_redis() 客户端工厂
 │   │   ├── security.py      # hash/verify 密码、create/decode_access_token
-│   │   ├── deps.py          # get_current_user（HTTPBearer）依赖
+│   │   ├── deps.py          # get_current_user/get_current_member（async 依赖：黑名单 + CSRF 校验）
 │   │   ├── result.py        # 统一响应 Result[T] 泛型与 ok()/failure() 工厂
 │   │   ├── middleware.py    # CORS 中间件（origins 走配置）
 │   │   ├── static.py        # SPAStaticFiles：托管 frontend/dist，404 回退 index.html
@@ -83,9 +83,12 @@
 | `MODE` | `DEV` | `PROD` 时强制要求显式设置 `SECRET_KEY` 和 `MYSQL_PASSWORD`，否则启动即报错 |
 | `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE` | 127.0.0.1/3306/root/123456/fastapi_db | PROD 下 host 默认 docker 服务名 `mysql` |
 | `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` | 127.0.0.1/6379/无 | PROD 下 host 默认 `redis` |
-| `SECRET_KEY` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_ALGORITHM` | 开发默认值 / 1440 / HS256 | JWT 签名配置；`JWT_ALGORITHM` 仅允许 HS256/HS384/HS512，令牌含 `iat`/`exp`/`aud` |
+| `SECRET_KEY` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_ALGORITHM` | 开发默认值 / 30 / HS256 | JWT 签名配置；`JWT_ALGORITHM` 仅允许 HS256/HS384/HS512，access token 含 `iat`/`exp`/`aud`/`jti` |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | 7 | refresh token 有效期（天），含 `type="refresh"` 标记与 `jti` |
+| `COOKIE_SECURE` | 未设置（PROD 开、DEV 关） | 认证 Cookie 的 Secure 标记；显式设置则以设置为准 |
+| `METRICS_TOKEN` | 未设置（公开） | 配置后访问 `/metrics` 必须携带 `Authorization: Bearer <token>`，否则 401 |
 | `ENABLE_DOCS` | 未设置（DEV 开、PROD 关） | API 文档（`/docs`、`/openapi.json`、`/redoc`）开关，显式设置则以设置为准 |
-| `CORS_ORIGINS` | `http://localhost,http://localhost:8080` | 逗号分隔（methods 固定 GET/POST/PUT/DELETE/OPTIONS，headers 固定 Authorization/Content-Type/X-Request-ID） |
+| `CORS_ORIGINS` | `http://localhost,http://localhost:8080` | 逗号分隔（methods 固定 GET/POST/PUT/DELETE/OPTIONS，headers 固定 Authorization/Content-Type/X-Request-ID/X-Requested-With） |
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | slowapi 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件 + 日志串联插件 |
@@ -108,11 +111,25 @@ cd frontend && npm run build          # 前端构建，产出 frontend/dist（�
 
 启动后：Swagger UI 在 `http://127.0.0.1:8000/docs`（PROD 默认关闭），健康检查在 `/health`（返回 mysql/redis 连通性；组件全部正常时 200 + `status=ok`，任一组件 down 时 HTTP 503 + `status=degraded`，body 均为 Result 格式）。
 
+## 认证与安全模型
+
+- **双令牌**：access token（默认 30 分钟，`jti`）+ refresh token（默认 7 天，`type="refresh"`、`jti`），均含 `aud`（`admin`/`member`）隔离身份。`create_access_token(subject, aud, expires_minutes=None)` / `create_refresh_token(subject, aud)`。
+- **登录**（`/auth/login`、`/member/login`）返回 `TokenOut{access_token,refresh_token,token_type,expires_in}`，并种下双 HttpOnly Cookie（`access_token`/`refresh_token`，`path=/`、`samesite=lax`，Secure 按 `COOKIE_SECURE`：PROD 开、DEV 关）。
+- **刷新**（`/auth/refresh`、`/member/refresh`）：cookie 优先、body `{"refresh_token":...}` 兜底；每次轮换删除旧 refresh `jti`（Redis `refresh:{jti}`），旧 token 重用 401；access token 冒充 refresh 因缺 `type` 被 401。
+- **登出**（`/auth/logout`、`/member/logout`）：access `jti` 写入 Redis 黑名单（`blacklist:{jti}`，TTL=剩余有效期），refresh `jti` 删除，并清空双 Cookie。
+- **取令牌顺序**（`app/core/deps.py`）：Authorization Bearer 优先，其次 `access_token` Cookie。**CSRF 防护**：Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须带 `X-Requested-With: XMLHttpRequest`，否则 403；Bearer 来源不受此约束；黑名单命中 401；Redis 异常 fail-open 记日志。
+- **依赖注入**：`get_current_user`/`get_current_member` 是 **async def**，FastAPI DI 原生支持；`/user/create_user` 自举守卫在 async 端点内手动 `await get_current_user(request=..., credentials=..., db=..., redis=...)`（传入 request 以保留 Cookie 令牌与 CSRF 校验），禁止再用同步事件循环变通。
+- **软删除**：`SoftDeleteMixin`（`deleted_at`，indexed），repository 统一过滤未删除记录；软删不释放邮箱唯一约束（同邮箱再注册 409，并发撞唯一约束由 service 层 IntegrityError 兜底转 409）。
+
 ## 关键接口语义
 
-- `POST /user/create_user`（空库自举）：users 表为空时无需 token 即可创建首个管理员；表非空时必须携带有效 admin Bearer token，否则 401。密码策略：8-64 位且同时包含字母和数字；name 2-32 位、去空白后非空；email 统一 `lower().strip()` 归一化。
+- `POST /user/create_user`（空库自举）：users 表为空时无需 token 即可创建首个管理员；表非空时必须持有有效 admin 令牌（Bearer 或 Cookie），否则 401。密码策略：8-64 位且同时包含字母和数字；name 2-32 位、去空白后非空；email 统一 `lower().strip()` 归一化。
 - 登录（`/auth/login`、`/member/login`）：账号不存在、密码错误、账号禁用（`is_active=False`）一律 401，不泄露账号状态；用户不存在时服务端做 dummy 哈希校验拉平响应耗时。
-- 邮箱撞唯一约束（含并发）返回 409。
+- 邮箱撞唯一约束（含并发、软删后重建）返回 409。
+- 分页：`GET /user/list`、`GET /member/list`（均 admin 鉴权）返回 `Result[Page[T]]`（`total`/`items`/`page`/`page_size`）；参数 `page≥1`、`page_size` 1-100 默认 20，越界 422。
+- 用户管理（admin）：`PATCH /user/{user_id}`（`UpdateUser{name?,is_active?}`，不存在 404）；`DELETE /user/{user_id}`（软删，删自己 400，不存在 404）。
+- 会员自助：`PATCH /member/me`（`UpdateMember{nickname?}`）；`DELETE /member/me`（软删并撤销令牌）。
+- `GET /user/get_user`、`GET /member/me`、`GET /user/me`：目标不存在或已软删时 404/401（会员被删后令牌即失效）。
 
 ## 代码风格
 
@@ -149,7 +166,7 @@ uv run alembic upgrade head
 
 ## 插件开发约定
 
-`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter；X-Request-ID 仅接受 `^[A-Za-z0-9_-]{1,64}$`，非法值自动生成 uuid）、`rate_limit`（slowapi，超限返回统一格式 429）、`metrics`（Prometheus `/metrics`）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
+`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter；X-Request-ID 仅接受 `^[A-Za-z0-9_-]{1,64}$`，非法值自动生成 uuid）、`rate_limit`（slowapi，超限返回统一格式 429）、`metrics`（Prometheus `/metrics`；配置 `METRICS_TOKEN` 后要求 `Bearer <token>`，否则 401，未配置保持公开）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
 
 ## 部署
 

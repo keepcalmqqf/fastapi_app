@@ -2,10 +2,10 @@ from sqlalchemy import Boolean, Integer, String, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base
-from app.models.base import TimestampMixin
+from app.models.base import SoftDeleteMixin, TimestampMixin
 
 
-class User(Base, TimestampMixin):
+class User(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "user"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

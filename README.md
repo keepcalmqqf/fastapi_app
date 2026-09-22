@@ -22,7 +22,7 @@
 │   │   ├── database.py      # SQLAlchemy 引擎与 get_db 依赖
 │   │   ├── redis.py         # Redis 客户端工厂
 │   │   ├── security.py      # 密码哈希、JWT 签发/校验
-│   │   ├── deps.py          # get_current_user 依赖
+│   │   ├── deps.py          # get_current_user/get_current_member（async 依赖，黑名单 + CSRF 校验）
 │   │   ├── result.py        # 统一响应 Result[T] 泛型
 │   │   ├── middleware.py    # CORS 中间件（origins 走配置）
 │   │   └── exceptions.py    # 全局异常处理（统一响应，内部细节只进日志）
@@ -106,12 +106,27 @@ cd frontend && npm run build   # 产出 frontend/dist
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/health` | 健康检查（MySQL + Redis 连通性，组件 down 时 503） |
-| POST | `/auth/login` | 登录，返回 JWT（账号不存在/密码错误/已禁用一律 401） |
-| GET | `/user/get_user?user_id=1` | 通过用户 id 获取用户（需 admin Bearer token） |
-| POST | `/user/create_user` | 创建用户；空库时首个管理员可无 token 自举，表非空需 admin token；密码 Argon2 哈希入库 |
-| GET | `/user/me` | 获取当前登录用户（需 Bearer token） |
+| POST | `/auth/login` | 登录，返回 `TokenOut`（access + refresh 双令牌）并种下双 HttpOnly Cookie（账号不存在/密码错误/已禁用一律 401） |
+| POST | `/auth/refresh` | 刷新令牌（轮换制：旧 refresh 一次性使用，cookie 优先、body 兜底） |
+| POST | `/auth/logout` | 登出：access jti 进黑名单 + refresh jti 删除 + 清 Cookie |
+| POST | `/member/register` | 会员注册（公开） |
+| POST | `/member/login` | 会员登录（同 `/auth/login`，aud=member） |
+| POST | `/member/refresh` | 会员刷新令牌 |
+| POST | `/member/logout` | 会员登出并撤销令牌 |
+| GET | `/member/me` | 获取当前登录会员（member 令牌） |
+| PATCH | `/member/me` | 更新当前会员昵称（member 令牌） |
+| DELETE | `/member/me` | 注销当前会员（软删除并撤销令牌） |
+| GET | `/member/list` | 分页获取会员列表（admin 令牌） |
+| GET | `/user/get_user?user_id=1` | 通过用户 id 获取用户（不存在 404） |
+| POST | `/user/create_user` | 创建用户；空库时首个管理员可无 token 自举，表非空需 admin 令牌；密码 Argon2 哈希入库 |
+| GET | `/user/me` | 获取当前登录用户（admin 令牌） |
+| GET | `/user/list` | 分页获取用户列表（admin 令牌，`page≥1`、`page_size` 1-100 默认 20） |
+| PATCH | `/user/{user_id}` | 更新用户（admin，`{name?,is_active?}`，不存在 404） |
+| DELETE | `/user/{user_id}` | 软删除用户（admin，删自己 400） |
 
-注册/创建用户的密码策略：8-64 位且同时包含字母和数字；name/nickname 2-32 位、去空白后非空；email 统一小写归一化。
+注册/创建用户的密码策略：8-64 位且同时包含字母和数字；name/nickname 2-32 位、去空白后非空；email 统一小写归一化。软删除不释放邮箱唯一约束，已删账号邮箱再注册返回 409。
+
+认证要点：access token 默认 30 分钟、refresh token 默认 7 天；后台（`aud=admin`）与会员（`aud=member`）令牌互不通用。取令牌顺序为 `Authorization: Bearer` 优先、其次 `access_token` Cookie；**Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须携带 `X-Requested-With: XMLHttpRequest`，否则 403**（Bearer 来源不受此约束）。
 
 所有接口返回统一格式（路由声明了 `response_model`，Swagger 可见真实结构）：
 
@@ -119,7 +134,7 @@ cd frontend && npm run build   # 产出 frontend/dist
 {"code": 200, "data": {}, "message": "请求成功"}
 ```
 
-调用受保护接口：
+调用受保护接口（方式一：Bearer token）：
 
 ```bash
 TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
@@ -127,6 +142,21 @@ TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
   -d '{"email":"zhangsan@test.com","password":"abcd1234"}' | jq -r .data.access_token)
 
 curl http://127.0.0.1:8000/user/me -H "Authorization: Bearer $TOKEN"
+```
+
+方式二：登录后由 Cookie 会话直接访问（写请求需带 CSRF 头）：
+
+```bash
+curl -c cookie.jar -X POST http://127.0.0.1:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"zhangsan@test.com","password":"abcd1234"}'
+
+curl -b cookie.jar http://127.0.0.1:8000/user/me
+
+curl -b cookie.jar -X POST http://127.0.0.1:8000/user/create_user \
+  -H 'Content-Type: application/json' \
+  -H 'X-Requested-With: XMLHttpRequest' \
+  -d '{"name":"李四","email":"lisi@test.com","password":"abcd1234"}'
 ```
 
 ## 配置说明
@@ -141,7 +171,10 @@ curl http://127.0.0.1:8000/user/me -H "Authorization: Bearer $TOKEN"
 | `MYSQL_DATABASE` | `fastapi_db` | 数据库名 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | `127.0.0.1` / `6379` / 无 | Redis 地址（PROD 默认 `redis`） |
 | `SECRET_KEY` | 开发默认值 | JWT 签名密钥，PROD 必须显式设置 |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | `1440` | 令牌有效期 |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | access token 有效期（分钟） |
+| `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | refresh token 有效期（天） |
+| `COOKIE_SECURE` | 未设置（PROD 开、DEV 关） | 认证 Cookie 是否仅经 HTTPS 发送 |
+| `METRICS_TOKEN` | 未设置（公开） | 配置后 `/metrics` 需 `Bearer <token>` 访问 |
 | `JWT_ALGORITHM` | `HS256` | 仅允许 HS256/HS384/HS512；令牌含 `iat`/`exp`/`aud`（admin/member 隔离） |
 | `ENABLE_DOCS` | 未设置（DEV 开、PROD 关） | API 文档开关，显式设置则以设置为准 |
 | `CORS_ORIGINS` | `http://localhost,...` | 允许的跨域来源，逗号分隔 |

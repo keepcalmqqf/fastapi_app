@@ -146,3 +146,125 @@ def test_admin_token_cannot_access_member_api(client):
     token = _create_admin_token(client)
     resp = client.get("/member/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 401
+
+
+# ---------- 会员资料更新 / 注销 ----------
+
+
+def test_member_update_me(client):
+    token = _register_and_login(client)
+    resp = client.patch(
+        "/member/me",
+        json={"nickname": "明明"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["nickname"] == "明明"
+
+    me = client.get("/member/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.json()["data"]["nickname"] == "明明"
+
+
+def test_member_delete_me_revokes_token_and_blocks_login(client):
+    """注销（软删）后：原 token 访问 401，同邮箱再登录 401。"""
+    token = _register_and_login(client)
+    resp = client.delete("/member/me", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+
+    me = client.get("/member/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 401
+
+    login = client.post(
+        "/member/login",
+        json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
+    )
+    assert login.status_code == 401
+
+
+def test_member_reregister_after_delete_conflicts(client):
+    """软删除不释放邮箱唯一约束：同邮箱再注册返回 409。"""
+    token = _register_and_login(client)
+    client.delete("/member/me", headers={"Authorization": f"Bearer {token}"})
+    resp = client.post("/member/register", json=MEMBER_PAYLOAD)
+    assert resp.status_code == 409
+
+
+# ---------- 会员 refresh / logout ----------
+
+
+def test_member_refresh_rotates_and_rejects_reuse(client):
+    _register_and_login(client)
+    old_refresh = client.post(
+        "/member/login",
+        json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
+    ).json()["data"]["refresh_token"]
+
+    resp = client.post("/member/refresh", json={"refresh_token": old_refresh})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["refresh_token"] != old_refresh
+
+    # 旧 refresh jti 已删除，重用即 401（先清 Cookie jar，避免有效 Cookie 优先于 body）
+    client.cookies.clear()
+    resp = client.post("/member/refresh", json={"refresh_token": old_refresh})
+    assert resp.status_code == 401
+
+
+def test_member_logout_revokes_tokens(client):
+    """member logout 后：旧 access token 失效，旧 refresh token 被撤销。"""
+    access = _register_and_login(client)
+    resp = client.post("/member/logout", headers={"Authorization": f"Bearer {access}"})
+    assert resp.status_code == 200
+
+    me = client.get("/member/me", headers={"Authorization": f"Bearer {access}"})
+    assert me.status_code == 401
+
+    tokens = client.post(
+        "/member/login",
+        json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
+    ).json()["data"]
+    resp = client.post("/member/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert resp.status_code == 200
+    new_access = resp.json()["data"]["access_token"]
+    client.post("/member/logout", headers={"Authorization": f"Bearer {new_access}"})
+    client.cookies.clear()  # 避免 Cookie jar 中更新后的 refresh Cookie 优先于 body
+    resp = client.post("/member/refresh", json={"refresh_token": tokens["refresh_token"]})
+    assert resp.status_code == 401
+
+
+# ---------- 会员列表（后台分页） ----------
+
+
+def test_member_list_pagination(client):
+    """/member/list 需 admin 令牌，返回 Page 结构；page_size>100 返回 422。"""
+    for i in range(3):
+        resp = client.post(
+            "/member/register",
+            json={
+                "nickname": f"会员{i}",
+                "email": f"member{i}@test.com",
+                "password": "abcd1234",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+    admin_token = _create_admin_token(client)
+    resp = client.get("/member/list", headers={"Authorization": f"Bearer {admin_token}"})
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["total"] == 3
+    assert data["page_size"] == 20
+    assert len(data["items"]) == 3
+
+    resp = client.get(
+        "/member/list",
+        params={"page_size": 101},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 422
+
+
+def test_member_list_requires_admin_token(client):
+    """会员令牌访问 /member/list 返回 401（aud 不匹配）。"""
+    member_token = _register_and_login(client)
+    resp = client.get("/member/list", headers={"Authorization": f"Bearer {member_token}"})
+    assert resp.status_code == 401

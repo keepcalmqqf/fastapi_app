@@ -33,6 +33,15 @@ class CreateUser(BaseModel):
     _check_name = field_validator("name")(_validate_non_blank)
 
 
+class UpdateUser(BaseModel):
+    """用户更新入参：全部可选，None 表示不修改；name 沿用创建的校验规则。"""
+
+    name: str | None = Field(default=None, min_length=2, max_length=32)
+    is_active: bool | None = None
+
+    _check_name = field_validator("name")(_validate_non_blank)
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str = Field(max_length=64)

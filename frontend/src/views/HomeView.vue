@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
+const router = useRouter()
 const authStore = useAuthStore()
 
 const loading = ref(true)
@@ -19,6 +21,11 @@ async function loadMe() {
   }
 }
 
+async function onLogout() {
+  await authStore.logout()
+  router.push('/login')
+}
+
 onMounted(loadMe)
 </script>
 
@@ -28,7 +35,7 @@ onMounted(loadMe)
       <template #header>
         <div class="card-header">
           <span>FastAPI 全栈脚手架</span>
-          <el-button type="danger" plain @click="authStore.logout">退出登录</el-button>
+          <el-button type="danger" plain @click="onLogout">退出登录</el-button>
         </div>
       </template>
       <h3 class="welcome">欢迎，{{ authStore.user?.name ?? '用户' }}！</h3>

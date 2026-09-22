@@ -3,8 +3,10 @@ import { reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { register as apiRegister } from '../api/auth'
+import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
+const authStore = useAuthStore()
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
@@ -44,8 +46,10 @@ async function onSubmit() {
     loading.value = true
     try {
       await apiRegister(form.name, form.email, form.password)
-      ElMessage.success('注册成功，请登录')
-      router.push('/login')
+      // 注册不种 cookie，继续调登录建立会话后直达首页
+      await authStore.login(form.email, form.password)
+      ElMessage.success('注册成功')
+      router.push('/')
     } catch {
       // 失败提示（如 401 注册已关闭 / 409 邮箱已存在）已由响应拦截器统一展示
     } finally {

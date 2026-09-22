@@ -27,7 +27,14 @@ class Settings(BaseSettings):
     # JWT
     SECRET_KEY: str = _DEV_SECRET_KEY
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+
+    # 认证 Cookie（None 时 PROD 视为 Secure、DEV 不 Secure，见 cookie_secure 属性）
+    COOKIE_SECURE: bool | None = None
+
+    # /metrics 访问令牌（None 时公开访问，生产环境应配置以启用鉴权）
+    METRICS_TOKEN: str | None = None
 
     # API 文档开关（None 时 DEV 开、PROD 关；显式设置则以设置为准）
     ENABLE_DOCS: bool | None = None
@@ -71,6 +78,13 @@ class Settings(BaseSettings):
         if self.ENABLE_DOCS is not None:
             return self.ENABLE_DOCS
         return self.MODE != "PROD"
+
+    @property
+    def cookie_secure(self) -> bool:
+        """Secure Cookie 开关：显式设置优先，否则 PROD 开、DEV 关。"""
+        if self.COOKIE_SECURE is not None:
+            return self.COOKIE_SECURE
+        return self.MODE == "PROD"
 
     @property
     def cors_origin_list(self) -> list[str]:
