@@ -1,9 +1,16 @@
 """认证域测试：登录双 Cookie、refresh 轮换、logout 黑名单、Cookie 来源 CSRF 防护。"""
 
+import asyncio
+from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from typing import Any
+from uuid import uuid4
 
+import jwt
+
+from app.core.revocation import is_subject_revoked, revocation_key, revoke_subject
 from app.core.settings import settings
+from tests.conftest import fake_redis
 
 USER_PAYLOAD: dict[str, Any] = {
     "name": "张三",
@@ -170,3 +177,148 @@ def test_bearer_write_needs_no_csrf_header(client):
         headers=_auth(token),
     )
     assert resp.status_code == 200, resp.text
+
+
+# ---------- 令牌类型隔离：refresh 令牌不得当作访问令牌 ----------
+
+
+def test_refresh_token_rejected_as_access_token(client):
+    """回归：refresh 令牌（type=refresh）作为 Bearer 访问受保护接口一律 401。
+
+    修复前 refresh 令牌可直接通过鉴权（其 aud/sub 均合法），
+    读接口与写接口都能成功，等同于把 7 天有效期的刷新凭证当成访问凭证。
+    """
+    _create_admin(client)
+    refresh_token = _login(client).json()["data"]["refresh_token"]
+
+    assert client.get("/user/me", headers=_auth(refresh_token)).status_code == 401
+    assert client.get("/user/list", headers=_auth(refresh_token)).status_code == 401
+
+    # 写接口同样拒绝，且不得产生副作用
+    resp = client.post(
+        "/user/create_user",
+        json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
+        headers=_auth(refresh_token),
+    )
+    assert resp.status_code == 401
+
+
+def test_refresh_token_rejected_as_access_token_via_cookie(client):
+    """Cookie 来源的 refresh 令牌同样不能充当 access_token Cookie。"""
+    _create_admin(client)
+    refresh_token = _login(client).json()["data"]["refresh_token"]
+
+    client.cookies.clear()
+    client.cookies.set("access_token", refresh_token)
+    resp = client.get("/user/me")
+    assert resp.status_code == 401
+
+
+def test_refresh_token_unusable_as_access_token_after_logout(client):
+    """回归：登出后 refresh 令牌既不能刷新，也不能绕过黑名单访问受保护接口。
+
+    这是修复前的核心危害路径——用户登出后，被窃取的 refresh 令牌仍可
+    调用后台接口（含特权写操作），有效期长达 REFRESH_TOKEN_EXPIRE_DAYS。
+    """
+    _create_admin(client)
+    tokens = _login(client).json()["data"]
+    access_token, refresh_token = tokens["access_token"], tokens["refresh_token"]
+
+    # 完整 Cookie 流程登出：access jti 进黑名单、refresh jti 删除、双 Cookie 清空
+    resp = client.post("/auth/logout", headers=CSRF_HEADER)
+    assert resp.status_code == 200
+
+    # access 令牌已被拉黑
+    assert client.get("/user/me", headers=_auth(access_token)).status_code == 401
+
+    client.cookies.clear()
+    # refresh 端点已不可用（jti 已从 Redis 删除）
+    assert client.post("/auth/refresh", json={"refresh_token": refresh_token}).status_code == 401
+    # 关键回归：拿 refresh 令牌直接当访问令牌用，必须 401
+    assert client.get("/user/me", headers=_auth(refresh_token)).status_code == 401
+    resp = client.post(
+        "/user/create_user",
+        json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
+        headers=_auth(refresh_token),
+    )
+    assert resp.status_code == 401
+
+
+def test_legacy_access_token_without_type_still_accepted(client):
+    """兼容性：历史 access 令牌无 type 字段时仍可访问（白名单放行 None 与 "access"）。"""
+    _create_admin(client)
+    now = datetime.now(timezone.utc)
+    legacy = jwt.encode(
+        {
+            "sub": "1",
+            "aud": "admin",
+            "iat": now,
+            "exp": now + timedelta(minutes=5),
+            "jti": uuid4().hex,
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    resp = client.get("/user/me", headers=_auth(legacy))
+    assert resp.status_code == 200, resp.text
+
+
+def test_unknown_token_type_rejected(client):
+    """白名单语义：非 access/refresh 的未知类型同样拒绝（避免未来新增令牌类型被误用）。"""
+    _create_admin(client)
+    now = datetime.now(timezone.utc)
+    weird = jwt.encode(
+        {
+            "sub": "1",
+            "aud": "admin",
+            "type": "reset",
+            "iat": now,
+            "exp": now + timedelta(minutes=5),
+            "jti": uuid4().hex,
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    resp = client.get("/user/me", headers=_auth(weird))
+    assert resp.status_code == 401
+
+
+# ---------- 主体级撤销（app/core/revocation.py） ----------
+
+
+class _BrokenRedis:
+    """所有操作都抛异常的 Redis 替身，用于验证 fail-open 行为。"""
+
+    async def get(self, key: str):
+        raise ConnectionError("Redis 不可用（测试模拟）")
+
+    async def set(self, *args, **kwargs):
+        raise ConnectionError("Redis 不可用（测试模拟）")
+
+
+def test_is_subject_revoked_semantics():
+    """撤销判定：无标记不撤销；iat <= 撤销时间点撤销；iat 更大（撤销后签发）放行。"""
+    fake_redis._data[revocation_key("admin", "1")] = "1000"
+
+    assert asyncio.run(is_subject_revoked("admin", "1", 999, fake_redis)) is True
+    # iat 为秒级，同一秒内无法区分先后，统一按「已撤销」处理（宁可误杀不可漏放）
+    assert asyncio.run(is_subject_revoked("admin", "1", 1000, fake_redis)) is True
+    # 撤销之后签发的令牌不受影响，保证重新启用后仍能正常登录
+    assert asyncio.run(is_subject_revoked("admin", "1", 1001, fake_redis)) is False
+    # 其他主体 / 缺少 iat / Redis 未初始化：均不撤销
+    assert asyncio.run(is_subject_revoked("admin", "2", 1, fake_redis)) is False
+    assert asyncio.run(is_subject_revoked("member", "1", 1, fake_redis)) is False
+    assert asyncio.run(is_subject_revoked("admin", "1", None, fake_redis)) is False
+    assert asyncio.run(is_subject_revoked("admin", "1", 1, None)) is False
+
+
+def test_revocation_fails_open_on_redis_error():
+    """Redis 故障时撤销读写都不抛异常：账号删除/停用仍由库内校验兜底。"""
+    assert asyncio.run(is_subject_revoked("admin", "1", 1, _BrokenRedis())) is False
+    asyncio.run(revoke_subject("admin", "1", _BrokenRedis()))
+
+
+def test_revoke_subject_noop_without_redis():
+    """Redis 未初始化时撤销为 no-op。"""
+    asyncio.run(revoke_subject("admin", "1", None))
+    assert revocation_key("member", "7") == "revoke:member:7"

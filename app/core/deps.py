@@ -3,9 +3,10 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.revocation import is_subject_revoked
 from app.core.security import decode_access_token
 from app.models import Member, User
 from app.repositories import member as member_repo
@@ -46,6 +47,17 @@ async def _check_blacklist(payload: dict, redis: Any) -> None:
         logger.warning("Redis 黑名单查询失败，本次请求放行（fail-open）", exc_info=True)
 
 
+async def _check_subject_revoked(payload: dict, audience: str, redis: Any) -> None:
+    """主体级撤销校验：账号被软删或禁用后，其此前签发的 access 令牌立即失效。
+
+    与黑名单（逐 jti）互补：黑名单用于登出单个设备，本校验用于终止账号全部会话。
+    Redis 异常时 is_subject_revoked 内部 fail-open 放行（账号状态仍由后续库内校验兜底）。
+    """
+    subject = payload.get("sub")
+    if subject and await is_subject_revoked(audience, subject, payload.get("iat"), redis):
+        raise HTTPException(status_code=401, detail="认证令牌已失效")
+
+
 async def _resolve_subject(
     request: Request | None,
     credentials: HTTPAuthorizationCredentials | None,
@@ -75,19 +87,27 @@ async def _resolve_subject(
         raise HTTPException(status_code=403, detail="缺少防跨站请求头（X-Requested-With）")
     payload = decode_access_token(token)
     subject = payload.get("sub") if payload else None
+    # 令牌类型白名单：只接受访问令牌。refresh 令牌（type="refresh"）有效期更长，
+    # 且登出只把 access 的 jti 写入黑名单，若允许其直接访问受保护接口，
+    # 登出后凭 refresh 令牌仍可操作（实测可完成特权写），故一律拒绝。
+    # 无 type 字段为历史 access 令牌，按访问令牌兼容处理。
+    token_type = payload.get("type") if payload else None
+    if token_type not in (None, "access"):
+        raise HTTPException(status_code=401, detail="认证令牌无效或已过期")
     # 旧版令牌没有 aud 字段，按 admin 兼容处理
     token_aud = payload.get("aud", "admin") if payload else None
     if token_aud != audience or not subject or not subject.isdigit():
         raise HTTPException(status_code=401, detail="认证令牌无效或已过期")
     if payload:
         await _check_blacklist(payload, redis)
+        await _check_subject_revoked(payload, audience, redis)
     return subject
 
 
 async def get_current_user(
     request: Request = None,  # type: ignore[assignment]
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     redis: Any = Depends(get_redis),
 ) -> User:
     """解析 admin 侧令牌并返回当前用户；也可在端点内手动 await（自举守卫场景）。
@@ -95,7 +115,7 @@ async def get_current_user(
     手动调用时只传 credentials/db/redis 即可，request 缺省表示不做 CSRF 头检查。
     """
     subject = await _resolve_subject(request, credentials, "admin", redis)
-    user = user_repo.get_user_by_id(db, int(subject))
+    user = await user_repo.get_user_by_id(db, int(subject))
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已禁用")
     return user
@@ -104,11 +124,11 @@ async def get_current_user(
 async def get_current_member(
     request: Request = None,  # type: ignore[assignment]
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     redis: Any = Depends(get_redis),
 ) -> Member:
     subject = await _resolve_subject(request, credentials, "member", redis)
-    member = member_repo.get_member_by_id(db, int(subject))
+    member = await member_repo.get_member_by_id(db, int(subject))
     if member is None or not member.is_active:
         raise HTTPException(status_code=401, detail="会员不存在或已禁用")
     return member

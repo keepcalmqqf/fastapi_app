@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import result
 from app.core.database import get_db
 from app.core.deps import get_current_member, get_current_user
 from app.core.result import Result
+from app.core.revocation import revoke_subject
 from app.models import Member, User
 from app.schemas.member import (
     MemberLogin,
@@ -22,8 +23,8 @@ router = APIRouter(prefix="/member", tags=["会员"])
 
 
 @router.post("/register", summary="会员注册", response_model=Result[MemberOut])
-def register(data: RegisterMember, db: Session = Depends(get_db)):
-    member = member_service.register(db, data)
+async def register(data: RegisterMember, db: AsyncSession = Depends(get_db)):
+    member = await member_service.register(db, data)
     if member is None:
         raise HTTPException(status_code=409, detail="邮箱已被注册")
     return result.ok(data=MemberOut.model_validate(member), message="注册成功")
@@ -34,9 +35,9 @@ async def login(
     data: MemberLogin,
     request: Request,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
 ):
-    member = member_service.authenticate(db, data.email, data.password)
+    member = await member_service.authenticate(db, data.email, data.password)
     if member is None:
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
     tokens = await token_service.issue_tokens(
@@ -79,27 +80,29 @@ async def logout(request: Request, response: Response):
 
 
 @router.get("/me", summary="获取当前登录会员", response_model=Result[MemberOut])
-def get_me(current_member: Member = Depends(get_current_member)):
+async def get_me(current_member: Member = Depends(get_current_member)):
     return result.ok(data=MemberOut.model_validate(current_member))
 
 
 @router.patch("/me", summary="更新当前登录会员", response_model=Result[MemberOut])
-def update_me(
+async def update_me(
     data: UpdateMember,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_member: Member = Depends(get_current_member),
 ):
-    updated = member_service.update_member(db, current_member, data.model_dump(exclude_unset=True))
+    updated = await member_service.update_member(
+        db, current_member, data.model_dump(exclude_unset=True)
+    )
     return result.ok(data=MemberOut.model_validate(updated), message="更新成功")
 
 
 @router.delete("/me", summary="注销当前登录会员（软删除）", response_model=Result[None])
 async def delete_me(
     request: Request,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     current_member: Member = Depends(get_current_member),
 ):
-    member_service.delete_member(db, current_member)
+    await member_service.delete_member(db, current_member)
     # 软删除后顺手撤销其令牌：access 取 cookie/header，refresh 取 cookie，取不到就跳过
     access_token = request.cookies.get("access_token")
     if not access_token:
@@ -110,18 +113,20 @@ async def delete_me(
     await token_service.revoke_tokens(
         access_token=access_token, refresh_token=refresh_token, redis=request.app.state.redis
     )
+    # 与后台软删用户对称：注销会员同样按主体撤销其全部令牌（覆盖其他设备的既有会话）
+    await revoke_subject("member", str(current_member.id), request.app.state.redis)
     return result.ok(message="注销成功")
 
 
 # 会员列表属于后台运营能力，与会员自身接口不同：这里用后台管理员令牌鉴权
 # （get_current_user），而非会员令牌（get_current_member）。
 @router.get("/list", summary="分页获取会员列表（后台）", response_model=Result[Page[MemberOut]])
-def list_members(
+async def list_members(
     params: PageParams = Depends(),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    items, total = member_service.list_members(db, params.page, params.page_size)
+    items, total = await member_service.list_members(db, params.page, params.page_size)
     page = Page[MemberOut](
         total=total,
         page=params.page,

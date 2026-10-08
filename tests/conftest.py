@@ -1,10 +1,11 @@
+import asyncio
 import fnmatch
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from typing import TypeVar
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.api import health as health_module
@@ -12,28 +13,49 @@ from app.core.database import get_db
 from app.main import app
 from app.models import Base
 
-engine = create_engine(
-    "sqlite://",
+async_engine = create_async_engine(
+    "sqlite+aiosqlite://",
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+TestingSessionLocal = async_sessionmaker(
+    autocommit=False, autoflush=False, expire_on_commit=False, bind=async_engine
+)
 
-Base.metadata.create_all(bind=engine)
+
+async def _create_tables() -> None:
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+asyncio.run(_create_tables())
 
 # /health 直接使用 app.core.database 的引擎（不经 get_db 依赖），替换为测试库保证 mysql 组件恒为 ok
-health_module.engine = engine
+health_module.async_engine = async_engine
 
 
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
+async def override_get_db() -> AsyncIterator[AsyncSession]:
+    async with TestingSessionLocal() as db:
         yield db
-    finally:
-        db.close()
 
 
 app.dependency_overrides[get_db] = override_get_db
+
+T = TypeVar("T")
+
+
+def run_db(fn: Callable[[AsyncSession], Awaitable[T]]) -> T:
+    """同步执行一段需要 AsyncSession 的异步操作（测试断言/造数用）。
+
+    测试本身是同步函数，而应用层已全面异步化；这里用 asyncio.run 起一个
+    一次性事件循环执行数据库操作。StaticPool 保证与应用共享同一个内存库连接。
+    """
+
+    async def _run() -> T:
+        async with TestingSessionLocal() as db:
+            return await fn(db)
+
+    return asyncio.run(_run())
 
 
 class FakeRedis:
@@ -105,10 +127,14 @@ def broken_redis() -> Iterator[FakeRedis]:
 @pytest.fixture(autouse=True)
 def clean_tables():
     yield
-    with TestingSessionLocal() as db:
-        for table in reversed(Base.metadata.sorted_tables):
-            db.execute(table.delete())
-        db.commit()
+
+    async def _clean() -> None:
+        async with TestingSessionLocal() as db:
+            for table in reversed(Base.metadata.sorted_tables):
+                await db.execute(table.delete())
+            await db.commit()
+
+    asyncio.run(_clean())
 
 
 @pytest.fixture()

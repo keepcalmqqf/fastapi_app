@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.core import result
-from app.core.database import engine
+from app.core.database import async_engine
 from app.core.result import Result
 
 router = APIRouter(tags=["系统"])
@@ -14,8 +14,8 @@ async def health(request: Request):
     components: dict[str, str] = {}
 
     try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        async with async_engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
         components["mysql"] = "ok"
     except Exception:
         components["mysql"] = "down"

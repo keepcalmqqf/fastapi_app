@@ -17,13 +17,13 @@ const form = reactive({
   password: '',
 })
 
-// 与后端校验规则保持一致：name 2-10 字符，password 8-64 位且同时包含字母和数字
+// 与后端校验规则保持一致：name 2-32 字符，password 8-64 位且同时包含字母和数字
 const PASSWORD_PATTERN = /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/
 
 const rules: FormRules = {
   name: [
     { required: true, message: '请输入昵称', trigger: 'blur' },
-    { min: 2, max: 10, message: '长度需为 2-10 个字符', trigger: 'blur' },
+    { min: 2, max: 32, message: '长度需为 2-32 个字符', trigger: 'blur' },
   ],
   email: [
     { required: true, message: '请输入邮箱', trigger: 'blur' },
@@ -66,7 +66,7 @@ async function onSubmit() {
       <p class="hint">首次部署时，注册用于初始化管理员账号；初始化完成后注册入口将关闭，请直接登录。</p>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
         <el-form-item label="昵称" prop="name">
-          <el-input v-model="form.name" placeholder="2-10 个字符" clearable />
+          <el-input v-model="form.name" maxlength="32" placeholder="2-32 个字符" clearable />
         </el-form-item>
         <el-form-item label="邮箱" prop="email">
           <el-input v-model="form.email" placeholder="请输入邮箱" clearable />

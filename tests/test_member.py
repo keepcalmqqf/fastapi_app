@@ -1,7 +1,8 @@
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Member
-from tests.conftest import TestingSessionLocal
+from tests.conftest import run_db
 
 MEMBER_PAYLOAD = {
     "nickname": "小明",
@@ -26,6 +27,16 @@ def _register_and_login(client) -> str:
     )
     assert resp.status_code == 200, f"登录失败: {resp.text}"
     return resp.json()["data"]["access_token"]
+
+
+def _member_login(client) -> dict:
+    """登录会员并返回完整令牌对（access + refresh）。"""
+    resp = client.post(
+        "/member/login",
+        json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
+    )
+    assert resp.status_code == 200, f"登录失败: {resp.text}"
+    return resp.json()["data"]
 
 
 def _create_admin_token(client) -> str:
@@ -91,8 +102,9 @@ def test_register_member_email_normalized(client):
 
 def test_member_password_is_hashed(client):
     client.post("/member/register", json=MEMBER_PAYLOAD)
-    with TestingSessionLocal() as db:
-        member = db.scalar(select(Member).where(Member.email == MEMBER_PAYLOAD["email"]))
+    member = run_db(
+        lambda db: db.scalar(select(Member).where(Member.email == MEMBER_PAYLOAD["email"]))
+    )
     assert member is not None
     assert member.password != MEMBER_PAYLOAD["password"]
     assert member.password.startswith("$argon2")
@@ -117,11 +129,14 @@ def test_member_login_wrong_password(client):
 def test_member_login_disabled(client):
     """禁用会员（is_active=False）登录返回 401。"""
     client.post("/member/register", json=MEMBER_PAYLOAD)
-    with TestingSessionLocal() as db:
-        member = db.scalar(select(Member).where(Member.email == MEMBER_PAYLOAD["email"]))
+
+    async def _disable(db: AsyncSession) -> None:
+        member = await db.scalar(select(Member).where(Member.email == MEMBER_PAYLOAD["email"]))
         assert member is not None
         member.is_active = False
-        db.commit()
+        await db.commit()
+
+    run_db(_disable)
     resp = client.post(
         "/member/login",
         json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
@@ -146,6 +161,31 @@ def test_admin_token_cannot_access_member_api(client):
     token = _create_admin_token(client)
     resp = client.get("/member/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 401
+
+
+def test_member_refresh_token_rejected_as_access_token(client):
+    """回归：会员 refresh 令牌不能作为 Bearer 访问会员接口（type 白名单校验）。"""
+    resp = client.post("/member/register", json=MEMBER_PAYLOAD)
+    assert resp.status_code == 200, resp.text
+    resp = client.post(
+        "/member/login",
+        json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
+    )
+    assert resp.status_code == 200, resp.text
+    refresh_token = resp.json()["data"]["refresh_token"]
+
+    assert (
+        client.get("/member/me", headers={"Authorization": f"Bearer {refresh_token}"}).status_code
+        == 401
+    )
+    assert (
+        client.patch(
+            "/member/me",
+            json={"nickname": "明明"},
+            headers={"Authorization": f"Bearer {refresh_token}"},
+        ).status_code
+        == 401
+    )
 
 
 # ---------- 会员资料更新 / 注销 ----------
@@ -187,6 +227,29 @@ def test_member_reregister_after_delete_conflicts(client):
     client.delete("/member/me", headers={"Authorization": f"Bearer {token}"})
     resp = client.post("/member/register", json=MEMBER_PAYLOAD)
     assert resp.status_code == 409
+
+
+def test_member_delete_revokes_other_device_tokens(client):
+    """注销会员会终止其全部会话：其他设备持有的 refresh 令牌同样失效。
+
+    逐 jti 的 revoke_tokens 只能删掉发起注销那台设备的 refresh 令牌，
+    多设备场景由主体级撤销标记覆盖，与后台软删用户的策略保持一致。
+    """
+    resp = client.post("/member/register", json=MEMBER_PAYLOAD)
+    assert resp.status_code == 200, resp.text
+
+    device_a = _member_login(client)
+    device_b = _member_login(client)
+    assert device_a["refresh_token"] != device_b["refresh_token"]
+
+    resp = client.delete(
+        "/member/me", headers={"Authorization": f"Bearer {device_a['access_token']}"}
+    )
+    assert resp.status_code == 200
+
+    client.cookies.clear()
+    resp = client.post("/member/refresh", json={"refresh_token": device_b["refresh_token"]})
+    assert resp.status_code == 401
 
 
 # ---------- 会员 refresh / logout ----------

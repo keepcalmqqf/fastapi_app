@@ -6,7 +6,7 @@
 
 - [FastAPI](https://fastapi.tiangolo.com/) + Pydantic v2 + SQLAlchemy 2.0
 - [Vue 3](https://vuejs.org/) + Vite + TypeScript + Pinia + Vue Router + Element Plus（`frontend/`）
-- MySQL 8（SQLAlchemy + PyMySQL）、Redis（`redis.asyncio`）
+- MySQL 8（SQLAlchemy 2.0 + asyncmy 异步驱动；Alembic 迁移走 PyMySQL 同步引擎）、Redis（`redis.asyncio`）
 - JWT 认证（PyJWT）+ Argon2 密码哈希（pwdlib）
 - Alembic 数据库迁移
 - [uv](https://docs.astral.sh/uv/) 包管理，ruff + mypy + pytest + pre-commit
@@ -121,12 +121,12 @@ cd frontend && npm run build   # 产出 frontend/dist
 | POST | `/user/create_user` | 创建用户；空库时首个管理员可无 token 自举，表非空需 admin 令牌；密码 Argon2 哈希入库 |
 | GET | `/user/me` | 获取当前登录用户（admin 令牌） |
 | GET | `/user/list` | 分页获取用户列表（admin 令牌，`page≥1`、`page_size` 1-100 默认 20） |
-| PATCH | `/user/{user_id}` | 更新用户（admin，`{name?,is_active?}`，不存在 404） |
-| DELETE | `/user/{user_id}` | 软删除用户（admin，删自己 400） |
+| PATCH | `/user/{user_id}` | 更新用户（admin，`{name?,is_active?}`，不存在 404）；置 `is_active=false` 会撤销该账号全部令牌 |
+| DELETE | `/user/{user_id}` | 软删除用户（admin，删自己 400）；同时撤销该账号全部令牌 |
 
 注册/创建用户的密码策略：8-64 位且同时包含字母和数字；name/nickname 2-32 位、去空白后非空；email 统一小写归一化。软删除不释放邮箱唯一约束，已删账号邮箱再注册返回 409。
 
-认证要点：access token 默认 30 分钟、refresh token 默认 7 天；后台（`aud=admin`）与会员（`aud=member`）令牌互不通用。取令牌顺序为 `Authorization: Bearer` 优先、其次 `access_token` Cookie；**Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须携带 `X-Requested-With: XMLHttpRequest`，否则 403**（Bearer 来源不受此约束）。
+认证要点：access token 默认 30 分钟、refresh token 默认 7 天；后台（`aud=admin`）与会员（`aud=member`）令牌互不通用。access token 带 `type="access"`、refresh token 带 `type="refresh"`，**受保护接口只接受访问令牌，refresh 令牌直接当访问令牌用一律 401**（否则登出后凭长效 refresh 令牌仍可操作后台接口）。登出只让当前设备的令牌失效；**停用/软删用户、会员注销则撤销该账号全部令牌（含其他设备）**，重新启用也不会复活旧会话。取令牌顺序为 `Authorization: Bearer` 优先、其次 `access_token` Cookie；**Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须携带 `X-Requested-With: XMLHttpRequest`，否则 403**（Bearer 来源不受此约束）。
 
 所有接口返回统一格式（路由声明了 `response_model`，Swagger 可见真实结构）：
 
@@ -170,7 +170,7 @@ curl -b cookie.jar -X POST http://127.0.0.1:8000/user/create_user \
 | `MYSQL_USER` / `MYSQL_PASSWORD` | `root` / `123456` | MySQL 账号 |
 | `MYSQL_DATABASE` | `fastapi_db` | 数据库名 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | `127.0.0.1` / `6379` / 无 | Redis 地址（PROD 默认 `redis`） |
-| `SECRET_KEY` | 开发默认值 | JWT 签名密钥，PROD 必须显式设置 |
+| `SECRET_KEY` | 开发默认值 | JWT 签名密钥，PROD 必须显式设置；**至少 32 字节**（HS256 安全下限，所有模式生效） |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | access token 有效期（分钟） |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | `7` | refresh token 有效期（天） |
 | `COOKIE_SECURE` | 未设置（PROD 开、DEV 关） | 认证 Cookie 是否仅经 HTTPS 发送 |

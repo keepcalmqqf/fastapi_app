@@ -10,7 +10,7 @@
 
 - **框架**：FastAPI ≥ 0.115（`fastapi[standard]`，含 `fastapi` CLI）、Pydantic v2、pydantic-settings
 - **前端**：Vue 3 + Vite + TypeScript + Pinia + Vue Router + Element Plus + Axios（`frontend/`，npm 管理）
-- **数据库**：MySQL 8（SQLAlchemy 2.0 + PyMySQL，同步 Session）、Alembic 迁移
+- **数据库**：MySQL 8（SQLAlchemy 2.0 + asyncmy，AsyncSession 全异步链路）、Alembic 迁移（仍走 PyMySQL 同步引擎，见 `alembic/env.py`）
 - **缓存**：Redis（`redis.asyncio`）
 - **认证**：PyJWT（HS256）+ pwdlib Argon2 密码哈希
 - **可选能力**：slowapi（限流）、prometheus-fastapi-instrumentator（指标）
@@ -24,10 +24,11 @@
 │   ├── main.py              # 应用入口：lifespan（Redis 初始化）、异常处理、CORS、插件、路由注册
 │   ├── core/                # 核心设施（与业务无关）
 │   │   ├── settings.py      # Settings（pydantic-settings），环境变量/.env 覆盖，PROD 强制密钥
-│   │   ├── database.py      # SQLAlchemy 引擎、SessionLocal、get_db 依赖
+│   │   ├── database.py      # SQLAlchemy 异步引擎、AsyncSessionLocal、get_db 依赖（AsyncSession）
 │   │   ├── redis.py         # create_redis() 客户端工厂
 │   │   ├── security.py      # hash/verify 密码、create/decode_access_token
-│   │   ├── deps.py          # get_current_user/get_current_member（async 依赖：黑名单 + CSRF 校验）
+│   │   ├── deps.py          # get_current_user/get_current_member（async 依赖：黑名单 + 主体撤销 + CSRF 校验）
+│   │   ├── revocation.py    # 主体级令牌撤销标记（Redis）：账号被删/停用时作废其全部令牌
 │   │   ├── result.py        # 统一响应 Result[T] 泛型与 ok()/failure() 工厂
 │   │   ├── middleware.py    # CORS 中间件（origins 走配置）
 │   │   ├── static.py        # SPAStaticFiles：托管 frontend/dist，404 回退 index.html
@@ -59,9 +60,10 @@
 ### 分层约定（必须遵守）
 
 1. **api 层**：只做参数解析与响应包装，不写业务逻辑。新增路由只需在 `app/api/` 下新建模块并定义模块级 `router = APIRouter(...)` —— `register_routers` 会自动发现并注册，无需改其他文件。可选业务模块（如 `member`）在 `register_routers` 的 `_MODULE_SWITCHES` 中登记开关，关闭时跳过路由注册（模型仍始终导入，保证迁移稳定）。
-2. **service 层**：业务逻辑和事务边界（`db.commit()` 只能出现在这里）。
-3. **repository 层**：纯数据访问，使用 `db.flush()`，**不允许 commit**。
+2. **service 层**：业务逻辑和事务边界（`await db.commit()` 只能出现在这里）。
+3. **repository 层**：纯数据访问，使用 `await db.flush()`，**不允许 commit**。注意：`onupdate` 列（如 `updated_at`）flush 后属性过期，async 下惰性刷新会抛 `MissingGreenlet`，更新后需 `await db.refresh(obj)` 再返回。
 4. **model 层**：ORM 模型是数据库 schema 的唯一来源；新模型必须在 `app/models/__init__.py` 中导入，Alembic autogenerate 才能发现。
+5. **异步链路**：应用运行时全异步（asyncmy + `AsyncSession`），所有 repository/service 函数均为 `async def`；`AsyncSessionLocal` 必须保持 `expire_on_commit=False`（commit 后路由还要读字段序列化响应）。Alembic 迁移例外，仍用 PyMySQL 同步引擎。
 
 ### 统一响应格式
 
@@ -83,7 +85,7 @@
 | `MODE` | `DEV` | `PROD` 时强制要求显式设置 `SECRET_KEY` 和 `MYSQL_PASSWORD`，否则启动即报错 |
 | `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_DATABASE` | 127.0.0.1/3306/root/123456/fastapi_db | PROD 下 host 默认 docker 服务名 `mysql` |
 | `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD` | 127.0.0.1/6379/无 | PROD 下 host 默认 `redis` |
-| `SECRET_KEY` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_ALGORITHM` | 开发默认值 / 30 / HS256 | JWT 签名配置；`JWT_ALGORITHM` 仅允许 HS256/HS384/HS512，access token 含 `iat`/`exp`/`aud`/`jti` |
+| `SECRET_KEY` / `ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_ALGORITHM` | 开发默认值 / 30 / HS256 | JWT 签名配置；**`SECRET_KEY` 至少 32 字节**（HS256 安全下限，所有模式生效），`JWT_ALGORITHM` 仅允许 HS256/HS384/HS512，access token 含 `iat`/`exp`/`aud`/`jti`/`type="access"` |
 | `REFRESH_TOKEN_EXPIRE_DAYS` | 7 | refresh token 有效期（天），含 `type="refresh"` 标记与 `jti` |
 | `COOKIE_SECURE` | 未设置（PROD 开、DEV 关） | 认证 Cookie 的 Secure 标记；显式设置则以设置为准 |
 | `METRICS_TOKEN` | 未设置（公开） | 配置后访问 `/metrics` 必须携带 `Authorization: Bearer <token>`，否则 401 |
@@ -113,10 +115,12 @@ cd frontend && npm run build          # 前端构建，产出 frontend/dist（�
 
 ## 认证与安全模型
 
-- **双令牌**：access token（默认 30 分钟，`jti`）+ refresh token（默认 7 天，`type="refresh"`、`jti`），均含 `aud`（`admin`/`member`）隔离身份。`create_access_token(subject, aud, expires_minutes=None)` / `create_refresh_token(subject, aud)`。
+- **双令牌**：access token（默认 30 分钟，`type="access"`、`jti`）+ refresh token（默认 7 天，`type="refresh"`、`jti`），均含 `aud`（`admin`/`member`）隔离身份。`create_access_token(subject, aud, expires_minutes=None)` / `create_refresh_token(subject, aud)`。
 - **登录**（`/auth/login`、`/member/login`）返回 `TokenOut{access_token,refresh_token,token_type,expires_in}`，并种下双 HttpOnly Cookie（`access_token`/`refresh_token`，`path=/`、`samesite=lax`，Secure 按 `COOKIE_SECURE`：PROD 开、DEV 关）。
-- **刷新**（`/auth/refresh`、`/member/refresh`）：cookie 优先、body `{"refresh_token":...}` 兜底；每次轮换删除旧 refresh `jti`（Redis `refresh:{jti}`），旧 token 重用 401；access token 冒充 refresh 因缺 `type` 被 401。
-- **登出**（`/auth/logout`、`/member/logout`）：access `jti` 写入 Redis 黑名单（`blacklist:{jti}`，TTL=剩余有效期），refresh `jti` 删除，并清空双 Cookie。
+- **刷新**（`/auth/refresh`、`/member/refresh`）：cookie 优先、body `{"refresh_token":...}` 兜底；每次轮换删除旧 refresh `jti`（Redis `refresh:{jti}`），旧 token 重用 401；access token 冒充 refresh 因 `type != "refresh"` 被 401。
+- **令牌类型隔离**（`app/core/deps.py::_resolve_subject`）：受保护接口只接受 `type` 为 `"access"` 或缺省（历史令牌）的令牌，`type="refresh"` 及其他未知类型一律 401。这是必须的——登出只把 access 的 `jti` 写黑名单、refresh 的 `jti` 仅从 `refresh:{jti}` 删除，而该集合在校验访问令牌时不会被查询，因此若放行 refresh 令牌，登出后凭它仍可完成特权写操作。
+- **登出**（`/auth/logout`、`/member/logout`）：access `jti` 写入 Redis 黑名单（`blacklist:{jti}`，TTL=剩余有效期），refresh `jti` 删除，并清空双 Cookie。登出**只作用于当前设备**，不影响该账号在其他设备上的会话。
+- **账号级撤销**（`app/core/revocation.py`）：管理员 `DELETE /user/{user_id}` 或 `PATCH /user/{user_id}` 置 `is_active=False`、以及会员 `DELETE /member/me` 时，调用 `revoke_subject(aud, subject, redis)` 写一条撤销时间点（`revoke:{aud}:{subject}`，TTL=refresh 有效期）。`deps._resolve_subject` 与 `rotate_refresh_token` 都会校验：**签发时间（`iat`）不晚于撤销时间点的令牌一律 401**。这样一次写入即可作废该主体在**所有设备**上的全部令牌（access + refresh）——逐 jti 撤销做不到这点，因为 jti 无法由主体反查；且账号重新启用后旧会话不会复活。`iat` 为秒级，故用 `<=` 比较（宁可误杀撤销后同秒签发的令牌，也不漏放）。登出**不应**调用它，否则会误踢该账号的其他设备。
 - **取令牌顺序**（`app/core/deps.py`）：Authorization Bearer 优先，其次 `access_token` Cookie。**CSRF 防护**：Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须带 `X-Requested-With: XMLHttpRequest`，否则 403；Bearer 来源不受此约束；黑名单命中 401；Redis 异常 fail-open 记日志。
 - **依赖注入**：`get_current_user`/`get_current_member` 是 **async def**，FastAPI DI 原生支持；`/user/create_user` 自举守卫在 async 端点内手动 `await get_current_user(request=..., credentials=..., db=..., redis=...)`（传入 request 以保留 Cookie 令牌与 CSRF 校验），禁止再用同步事件循环变通。
 - **软删除**：`SoftDeleteMixin`（`deleted_at`，indexed），repository 统一过滤未删除记录；软删不释放邮箱唯一约束（同邮箱再注册 409，并发撞唯一约束由 service 层 IntegrityError 兜底转 409）。
@@ -127,8 +131,8 @@ cd frontend && npm run build          # 前端构建，产出 frontend/dist（�
 - 登录（`/auth/login`、`/member/login`）：账号不存在、密码错误、账号禁用（`is_active=False`）一律 401，不泄露账号状态；用户不存在时服务端做 dummy 哈希校验拉平响应耗时。
 - 邮箱撞唯一约束（含并发、软删后重建）返回 409。
 - 分页：`GET /user/list`、`GET /member/list`（均 admin 鉴权）返回 `Result[Page[T]]`（`total`/`items`/`page`/`page_size`）；参数 `page≥1`、`page_size` 1-100 默认 20，越界 422。
-- 用户管理（admin）：`PATCH /user/{user_id}`（`UpdateUser{name?,is_active?}`，不存在 404）；`DELETE /user/{user_id}`（软删，删自己 400，不存在 404）。
-- 会员自助：`PATCH /member/me`（`UpdateMember{nickname?}`）；`DELETE /member/me`（软删并撤销令牌）。
+- 用户管理（admin）：`PATCH /user/{user_id}`（`UpdateUser{name?,is_active?}`，不存在 404）；`DELETE /user/{user_id}`（软删，删自己 400，不存在 404）。停用与软删都会撤销该账号全部令牌（见「账号级撤销」），仅改 name 不会。
+- 会员自助：`PATCH /member/me`（`UpdateMember{nickname?}`）；`DELETE /member/me`（软删并撤销令牌，含该账号其他设备）。
 - `GET /user/get_user`、`GET /member/me`、`GET /user/me`：目标不存在或已软删时 404/401（会员被删后令牌即失效）。
 
 ## 代码风格
@@ -147,7 +151,7 @@ cd frontend && npm run build          # 前端构建，产出 frontend/dist（�
 uv run pytest        # 测试目录 tests/，无需 MySQL/Redis
 ```
 
-- `tests/conftest.py` 用 SQLite 内存库（`StaticPool`）通过 `app.dependency_overrides` 覆盖 `get_db`；每个测试后自动清空所有表（autouse fixture）。
+- `tests/conftest.py` 用 SQLite 内存库（aiosqlite + `StaticPool`）通过 `app.dependency_overrides` 覆盖 `get_db`；每个测试后自动清空所有表（autouse fixture）；测试内需直接查库/造数时用 `run_db(async_fn)` 同步包装执行异步操作。
 - Redis 由 conftest 中的内存 `FakeRedis` 隔离（autouse monkeypatch 替换 `app.main.create_redis`，`/health` 使用的引擎同步替换为测试库），测试不依赖真实 MySQL/Redis；`broken_redis` fixture 可将 Redis 置为故障态，供 degraded 用例使用。
 - 测试通过 `TestClient`（`client` fixture）走完整 HTTP 链路，覆盖认证、校验错误、统一响应格式等。
 - 新增功能应在 `tests/` 下补充对应 API 测试，断言统一响应的 `code`/`data` 字段。
@@ -166,7 +170,7 @@ uv run alembic upgrade head
 
 ## 插件开发约定
 
-`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter；X-Request-ID 仅接受 `^[A-Za-z0-9_-]{1,64}$`，非法值自动生成 uuid）、`rate_limit`（slowapi，超限返回统一格式 429）、`metrics`（Prometheus `/metrics`；配置 `METRICS_TOKEN` 后要求 `Bearer <token>`，否则 401，未配置保持公开）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
+`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter；X-Request-ID 仅接受 `^[A-Za-z0-9_-]{1,64}$`，非法值自动生成 uuid）、`rate_limit`（slowapi 限流，超限返回统一格式 429。**不使用 slowapi 自带的 SlowAPIMiddleware**：FastAPI 0.141 起 `include_router` 注册的是没有 `endpoint` 属性的 `_IncludedRouter`，slowapi 的 `_find_route_handler` 查找恒为 None 从而把每个请求判为豁免，导致限流在真实应用上整体静默失效；且它无法 await 协程处理器时会回退到默认 body，泄露限流阈值。现改为自建中间件，按「是否命中 API 路由」判定并直接调用 `limiter._check_request_limit`，SPA/静态资源豁免，详见 `app/plugins/rate_limit.py` 注释与 `tests/test_rate_limit.py`）、`metrics`（Prometheus `/metrics`；配置 `METRICS_TOKEN` 后要求 `Bearer <token>`，否则 401，未配置保持公开）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
 
 ## 部署
 
@@ -182,9 +186,9 @@ CI（GitHub Actions，push main 或 PR）：`uv sync --frozen` → `ruff check` 
 
 ## 安全注意事项
 
-- **PROD 模式启动校验**：`MODE=PROD` 时未显式设置 `SECRET_KEY` 或 `MYSQL_PASSWORD` 会直接抛错拒绝启动——不要在生产环境绕过此校验。
+- **PROD 模式启动校验**：`MODE=PROD` 时未显式设置 `SECRET_KEY` 或 `MYSQL_PASSWORD` 会直接抛错拒绝启动——不要在生产环境绕过此校验。另外 `SECRET_KEY` 短于 32 字节在所有模式下都会被拒绝（HS256 安全下限）。
 - 密码一律用 `security.hash_password`（Argon2）入库；响应模型（`UserOut` 等）不得包含 `password` 字段。
 - JWT 密钥、数据库密码只通过环境变量/`.env` 注入，`.env` 不得提交；`.env.example` 只放开发默认值。
 - 全局异常处理器不会把内部异常细节返回给客户端（只进日志），新增异常处理时保持这一原则。
 - 受保护接口通过 `Depends(get_current_user)` 鉴权；令牌无效、用户不存在或 `is_active=False` 均返回 401。
-- 后台用户与会员（C 端）分表分令牌：JWT 带 `aud` claim（`admin` / `member`），后台接口用 `Depends(get_current_user)`，会员接口用 `Depends(get_current_member)`，两类令牌互不通用（跨用返回 401）。
+- 后台用户与会员（C 端）分表分令牌：JWT 带 `aud` claim（`admin` / `member`），后台接口用 `Depends(get_current_user)`，会员接口用 `Depends(get_current_member)`，两类令牌互不通用（跨用返回 401）。此外 `type` claim 隔离访问与刷新令牌：受保护接口拒绝 `type="refresh"` 的令牌（`app/core/deps.py`）。

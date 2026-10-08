@@ -4,6 +4,7 @@ from typing import Any
 
 from fastapi import HTTPException, Response
 
+from app.core.revocation import is_subject_revoked
 from app.core.security import create_access_token, create_refresh_token, decode_access_token
 from app.core.settings import settings
 from app.schemas.token import TokenOut
@@ -68,6 +69,9 @@ async def rotate_refresh_token(refresh_token: str, response: Response, redis: An
     aud = payload.get("aud")
     if not jti or not subject or not aud:
         raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
+    # 主体级撤销优先于 jti 校验：账号被软删/禁用后不得再凭旧 refresh 换发新令牌
+    if await is_subject_revoked(aud, subject, payload.get("iat"), redis):
+        raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
     stored = await redis.get(f"refresh:{jti}") if redis is not None else None
     if stored is None:
         raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
@@ -77,7 +81,11 @@ async def rotate_refresh_token(refresh_token: str, response: Response, redis: An
 
 async def revoke_tokens(access_token: str | None, refresh_token: str | None, redis: Any) -> None:
     """登出撤销：access 的 jti 写入黑名单（TTL = 剩余有效期秒数，到期自然过期），
-    refresh 的 jti 从有效集合中删除。无法解析的令牌直接忽略。"""
+    refresh 的 jti 从有效集合中删除。无法解析的令牌直接忽略。
+
+    只作用于传入的这两个令牌（即当前设备），不影响该账号在其他设备上的会话；
+    需要终止账号全部会话时用 `app.core.revocation.revoke_subject`。
+    """
     if redis is None:
         return
     now = int(datetime.now(timezone.utc).timestamp())

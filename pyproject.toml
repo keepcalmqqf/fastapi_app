@@ -18,10 +18,13 @@ dependencies = [
     "alembic>=1.20.0",
     "slowapi>=0.1.10",
     "prometheus-fastapi-instrumentator>=8.1.0",
+    "asyncmy>=0.2.15",
+    "greenlet>=3.5.6",
 ]
 
 [dependency-groups]
 dev = [
+    "aiosqlite>=0.22.1",
     "httpx>=0.28.1",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
@@ -53,6 +56,9 @@ addopts = ["--cov=app", "--cov-report=term-missing"]
 
 [tool.coverage.run]
 source = ["app"]
+# SQLAlchemy asyncio 通过 greenlet 切换执行上下文，不声明 greenlet 并发会导致
+# greenlet 内执行的代码行（service/repository 的 await 链）不被统计，覆盖率失真
+concurrency = ["thread", "greenlet"]
 
 [tool.coverage.report]
 exclude_also = [

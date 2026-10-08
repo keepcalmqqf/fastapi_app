@@ -4,7 +4,7 @@ import jwt
 
 from app.core.security import create_access_token
 from app.core.settings import settings
-from tests.conftest import TestingSessionLocal
+from tests.conftest import run_db
 
 USER_PAYLOAD: dict[str, Any] = {
     "name": "张三",
@@ -160,8 +160,7 @@ def test_password_is_hashed(client):
     from app.models import User
 
     client.post("/user/create_user", json=USER_PAYLOAD)
-    with TestingSessionLocal() as db:
-        user = db.scalar(select(User).where(User.email == USER_PAYLOAD["email"]))
+    user = run_db(lambda db: db.scalar(select(User).where(User.email == USER_PAYLOAD["email"])))
     assert user is not None
     assert user.password != USER_PAYLOAD["password"]
     assert user.password.startswith("$argon2")
@@ -209,7 +208,8 @@ def test_forged_token_rejected(client):
     _create_first_admin(client)
     forged = jwt.encode(
         {"sub": "1", "aud": "admin"},
-        "not-the-real-secret-key",
+        # 密钥长度取 >=32 字节，避免 PyJWT 对短 HMAC 密钥发出 InsecureKeyLengthWarning
+        "not-the-real-secret-key-but-long-enough-to-be-safe",
         algorithm=settings.JWT_ALGORITHM,
     )
     resp = client.get("/user/me", headers={"Authorization": f"Bearer {forged}"})
@@ -361,3 +361,93 @@ def test_delete_self_forbidden(client):
         f"/user/{me.json()['data']['id']}", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 400
+
+
+# ---------- 账号级令牌撤销（软删 / 停用 / 重新启用） ----------
+
+
+def _login_tokens(client, email: str, password: str) -> dict:
+    """登录并返回完整令牌对（access + refresh）。"""
+    resp = client.post("/auth/login", json={"email": email, "password": password})
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+def test_delete_user_revokes_all_tokens(client):
+    """软删用户后其全部令牌失效：access 401，refresh 也不能再换发新令牌。
+
+    修复前 refresh 仍可轮换（200），登出/删除都无法真正终止该账号会话。
+    """
+    admin_token = _create_first_admin(client)
+    victim = _create_one_user(client, admin_token)
+    victim_tokens = _login_tokens(client, "lisi@test.com", "abcd1234")
+
+    resp = client.delete(
+        f"/user/{victim['id']}", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert resp.status_code == 200
+
+    headers = {"Authorization": f"Bearer {victim_tokens['access_token']}"}
+    assert client.get("/user/me", headers=headers).status_code == 401
+
+    client.cookies.clear()  # 避免 Cookie 优先，确保校验的是 body 里的 refresh 令牌
+    resp = client.post("/auth/refresh", json={"refresh_token": victim_tokens["refresh_token"]})
+    assert resp.status_code == 401
+
+
+def test_disable_user_revokes_refresh_token(client):
+    """停用用户同样终止其会话：旧 refresh 令牌不能再换发新令牌。"""
+    admin_token = _create_first_admin(client)
+    victim = _create_one_user(client, admin_token)
+    victim_tokens = _login_tokens(client, "lisi@test.com", "abcd1234")
+
+    resp = client.patch(
+        f"/user/{victim['id']}",
+        json={"is_active": False},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["is_active"] is False
+
+    client.cookies.clear()
+    resp = client.post("/auth/refresh", json={"refresh_token": victim_tokens["refresh_token"]})
+    assert resp.status_code == 401
+
+
+def test_update_user_name_does_not_revoke_tokens(client):
+    """反向保障：仅改昵称不应触发任何令牌撤销。"""
+    admin_token = _create_first_admin(client)
+    victim = _create_one_user(client, admin_token)
+    victim_tokens = _login_tokens(client, "lisi@test.com", "abcd1234")
+
+    resp = client.patch(
+        f"/user/{victim['id']}",
+        json={"name": "李小四"},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert resp.status_code == 200
+
+    client.cookies.clear()
+    resp = client.post("/auth/refresh", json={"refresh_token": victim_tokens["refresh_token"]})
+    assert resp.status_code == 200, resp.text
+
+
+def test_reenable_user_does_not_resurrect_old_tokens(client):
+    """重新启用账号不会复活旧会话：停用前签发的 refresh 令牌保持失效。"""
+    admin_token = _create_first_admin(client)
+    victim = _create_one_user(client, admin_token)
+    old_tokens = _login_tokens(client, "lisi@test.com", "abcd1234")
+
+    auth = {"Authorization": f"Bearer {admin_token}"}
+    assert (
+        client.patch(f"/user/{victim['id']}", json={"is_active": False}, headers=auth).status_code
+        == 200
+    )
+    assert (
+        client.patch(f"/user/{victim['id']}", json={"is_active": True}, headers=auth).status_code
+        == 200
+    )
+
+    client.cookies.clear()
+    resp = client.post("/auth/refresh", json={"refresh_token": old_tokens["refresh_token"]})
+    assert resp.status_code == 401

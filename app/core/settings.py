@@ -6,6 +6,9 @@ _DEV_SECRET_KEY = "dev-only-secret-key-please-change-in-production"
 # 允许的 JWT 签名算法（对称 HMAC 系列，防止误配 none 导致签名校验失效）
 _ALLOWED_JWT_ALGORITHMS = ("HS256", "HS384", "HS512")
 
+# HS256 的安全下限：密钥长度不应低于哈希输出长度（32 字节）
+_MIN_SECRET_KEY_BYTES = 32
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -59,6 +62,19 @@ class Settings(BaseSettings):
             raise ValueError(f"JWT_ALGORITHM 仅支持 {'/'.join(_ALLOWED_JWT_ALGORITHMS)}")
         return v
 
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def _validate_secret_key_strength(cls, v: str) -> str:
+        """HS256 密钥不得短于 32 字节（哈希输出长度）。
+
+        短密钥会显著削弱签名强度，PyJWT 也会对 <32 字节的 HMAC 密钥发出
+        InsecureKeyLengthWarning。此处对所有模式生效（含 DEV）：开发默认值本身
+        已有 46 字节，正常使用不会触发；显式配了短密钥则应尽早失败而不是带病运行。
+        """
+        if len(v.encode()) < _MIN_SECRET_KEY_BYTES:
+            raise ValueError(f"SECRET_KEY 至少需要 {_MIN_SECRET_KEY_BYTES} 字节")
+        return v
+
     @model_validator(mode="after")
     def _apply_mode_defaults(self) -> "Settings":
         if not self.MYSQL_HOST:
@@ -92,8 +108,17 @@ class Settings(BaseSettings):
 
     @property
     def SQLALCHEMY_DATABASE_URL(self) -> str:
+        """同步连接串（mysql+pymysql），仅供 Alembic 迁移使用。"""
         return (
             f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
+            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+        )
+
+    @property
+    def SQLALCHEMY_ASYNC_DATABASE_URL(self) -> str:
+        """异步连接串（mysql+asyncmy），应用运行时使用。"""
+        return (
+            f"mysql+asyncmy://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
         )
 

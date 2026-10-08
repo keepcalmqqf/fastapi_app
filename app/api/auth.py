@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import result
 from app.core.database import get_db
@@ -24,10 +24,10 @@ class RefreshBody(BaseModel):
 async def login(
     data: UserLogin,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db),
     redis=Depends(get_redis),
 ):
-    user = user_service.authenticate(db, data.email, data.password)
+    user = await user_service.authenticate(db, data.email, data.password)
     if user is None:
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
     token_out = await token_service.issue_tokens(str(user.id), "admin", response, redis)

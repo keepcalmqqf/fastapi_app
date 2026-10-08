@@ -18,10 +18,21 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(subject: str, aud: str, expires_minutes: int | None = None) -> str:
-    """签发访问令牌，payload 含 sub/aud/iat/exp/jti；audience 区分调用方身份。"""
+    """签发访问令牌，payload 含 sub/aud/iat/exp/jti/type；audience 区分调用方身份。
+
+    type="access" 与刷新令牌的 type="refresh" 互斥，deps 层据此拒绝把刷新令牌
+    当作访问令牌使用（否则长有效期的 refresh 令牌可绕过登出黑名单直达受保护接口）。
+    """
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=expires_minutes or settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": subject, "aud": aud, "exp": expire, "iat": now, "jti": uuid4().hex}
+    payload = {
+        "sub": subject,
+        "aud": aud,
+        "exp": expire,
+        "iat": now,
+        "jti": uuid4().hex,
+        "type": "access",
+    }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
