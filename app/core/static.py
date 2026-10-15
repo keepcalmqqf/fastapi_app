@@ -5,15 +5,19 @@ from starlette.types import Scope
 
 # 已知 API 前缀：这些路径未匹配时不回退 index.html，而是抛 404（JSON 统一格式）
 API_PREFIXES = (
-    "/api",
-    "/auth",
-    "/user",
-    "/member",
+    "/api",  # 业务接口统一前缀 /api/v1/...（见 app/api/__init__.py）
     "/health",
     "/metrics",
     "/docs",
     "/redoc",
     "/openapi.json",
+    # 历史业务前缀（/auth、/user、/member、/audit 已迁至 /api/v1 下）：保留条目
+    # 只为让未迁移的调用方拿到 JSON 404，而不是被回退成前端页面（GET 会返回
+    # HTML 200、POST 会返回 405，都比 404 更难排查）
+    "/auth",
+    "/user",
+    "/member",
+    "/audit",
 )
 
 

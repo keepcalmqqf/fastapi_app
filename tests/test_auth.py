@@ -33,12 +33,12 @@ def _set_cookie(response, name: str):
 
 
 def _create_admin(client) -> None:
-    resp = client.post("/user/", json=USER_PAYLOAD)
+    resp = client.post("/api/v1/user/", json=USER_PAYLOAD)
     assert resp.status_code == 200, resp.text
 
 
 def _login(client, email: str = USER_PAYLOAD["email"], password: str = USER_PAYLOAD["password"]):
-    resp = client.post("/auth/login", json={"email": email, "password": password})
+    resp = client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert resp.status_code == 200, resp.text
     return resp
 
@@ -77,7 +77,7 @@ def test_refresh_rotates_and_rejects_reuse(client):
     _create_admin(client)
     old_refresh = _login(client).json()["data"]["refresh_token"]
 
-    resp = client.post("/auth/refresh", json={"refresh_token": old_refresh})
+    resp = client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
     assert resp.status_code == 200, resp.text
     new_data = resp.json()["data"]
     assert new_data["access_token"] and new_data["refresh_token"]
@@ -85,7 +85,7 @@ def test_refresh_rotates_and_rejects_reuse(client):
 
     # 旧 refresh jti 已删除，重用即 401（先清 Cookie jar，避免有效 Cookie 优先于 body）
     client.cookies.clear()
-    resp = client.post("/auth/refresh", json={"refresh_token": old_refresh})
+    resp = client.post("/api/v1/auth/refresh", json={"refresh_token": old_refresh})
     assert resp.status_code == 401
 
 
@@ -94,7 +94,7 @@ def test_refresh_rejects_access_token(client):
     _create_admin(client)
     access = _login(client).json()["data"]["access_token"]
     client.cookies.clear()
-    resp = client.post("/auth/refresh", json={"refresh_token": access})
+    resp = client.post("/api/v1/auth/refresh", json={"refresh_token": access})
     assert resp.status_code == 401
 
 
@@ -102,13 +102,13 @@ def test_refresh_via_cookie_without_body(client):
     """cookie 优先：登录后客户端携带 refresh Cookie 即可刷新，无需 body。"""
     _create_admin(client)
     _login(client)
-    resp = client.post("/auth/refresh")
+    resp = client.post("/api/v1/auth/refresh")
     assert resp.status_code == 200, resp.text
     assert resp.json()["data"]["access_token"]
 
 
 def test_refresh_without_token(client):
-    resp = client.post("/auth/refresh")
+    resp = client.post("/api/v1/auth/refresh")
     assert resp.status_code == 401
 
 
@@ -121,22 +121,22 @@ def test_logout_blacklists_access_token(client):
     tokens = _login(client).json()["data"]
     headers = _auth(tokens["access_token"])
 
-    resp = client.post("/auth/logout", headers=headers)
+    resp = client.post("/api/v1/auth/logout", headers=headers)
     assert resp.status_code == 200
 
-    me = client.get("/user/me", headers=headers)
+    me = client.get("/api/v1/user/me", headers=headers)
     assert me.status_code == 401
 
     # 旧 refresh 一并撤销
     client.cookies.clear()
-    resp = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    resp = client.post("/api/v1/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert resp.status_code == 401
 
 
 def test_logout_clears_cookies(client):
     _create_admin(client)
     _login(client)
-    resp = client.post("/auth/logout")
+    resp = client.post("/api/v1/auth/logout")
     assert resp.status_code == 200
     for name in ("access_token", "refresh_token"):
         morsel = _set_cookie(resp, name)
@@ -152,10 +152,10 @@ def test_cookie_write_without_csrf_header_forbidden(client):
     _login(client)  # TestClient 自动携带后续请求的 Cookie
 
     payload = {**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"}
-    resp = client.post("/user/", json=payload)
+    resp = client.post("/api/v1/user/", json=payload)
     assert resp.status_code == 403
 
-    resp = client.post("/user/", json=payload, headers=CSRF_HEADER)
+    resp = client.post("/api/v1/user/", json=payload, headers=CSRF_HEADER)
     assert resp.status_code == 200, resp.text
 
 
@@ -163,7 +163,7 @@ def test_cookie_read_request_needs_no_csrf_header(client):
     """Cookie 来源的读请求（GET）不需要 CSRF 头。"""
     _create_admin(client)
     _login(client)
-    resp = client.get("/user/me")
+    resp = client.get("/api/v1/user/me")
     assert resp.status_code == 200
 
 
@@ -172,7 +172,7 @@ def test_bearer_write_needs_no_csrf_header(client):
     _create_admin(client)
     token = _login(client).json()["data"]["access_token"]
     resp = client.post(
-        "/user/",
+        "/api/v1/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers=_auth(token),
     )
@@ -191,12 +191,12 @@ def test_refresh_token_rejected_as_access_token(client):
     _create_admin(client)
     refresh_token = _login(client).json()["data"]["refresh_token"]
 
-    assert client.get("/user/me", headers=_auth(refresh_token)).status_code == 401
-    assert client.get("/user/", headers=_auth(refresh_token)).status_code == 401
+    assert client.get("/api/v1/user/me", headers=_auth(refresh_token)).status_code == 401
+    assert client.get("/api/v1/user/", headers=_auth(refresh_token)).status_code == 401
 
     # 写接口同样拒绝，且不得产生副作用
     resp = client.post(
-        "/user/",
+        "/api/v1/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers=_auth(refresh_token),
     )
@@ -210,7 +210,7 @@ def test_refresh_token_rejected_as_access_token_via_cookie(client):
 
     client.cookies.clear()
     client.cookies.set("access_token", refresh_token)
-    resp = client.get("/user/me")
+    resp = client.get("/api/v1/user/me")
     assert resp.status_code == 401
 
 
@@ -225,19 +225,22 @@ def test_refresh_token_unusable_as_access_token_after_logout(client):
     access_token, refresh_token = tokens["access_token"], tokens["refresh_token"]
 
     # 完整 Cookie 流程登出：access jti 进黑名单、refresh jti 删除、双 Cookie 清空
-    resp = client.post("/auth/logout", headers=CSRF_HEADER)
+    resp = client.post("/api/v1/auth/logout", headers=CSRF_HEADER)
     assert resp.status_code == 200
 
     # access 令牌已被拉黑
-    assert client.get("/user/me", headers=_auth(access_token)).status_code == 401
+    assert client.get("/api/v1/user/me", headers=_auth(access_token)).status_code == 401
 
     client.cookies.clear()
     # refresh 端点已不可用（jti 已从 Redis 删除）
-    assert client.post("/auth/refresh", json={"refresh_token": refresh_token}).status_code == 401
+    assert (
+        client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token}).status_code
+        == 401
+    )
     # 关键回归：拿 refresh 令牌直接当访问令牌用，必须 401
-    assert client.get("/user/me", headers=_auth(refresh_token)).status_code == 401
+    assert client.get("/api/v1/user/me", headers=_auth(refresh_token)).status_code == 401
     resp = client.post(
-        "/user/",
+        "/api/v1/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers=_auth(refresh_token),
     )
@@ -246,7 +249,7 @@ def test_refresh_token_unusable_as_access_token_after_logout(client):
 
 def _admin_id(client) -> str:
     """当前首个管理员的 id（不假设为 1：MySQL 的自增计数不会因清表回退）。"""
-    me = client.get("/user/me", headers=_auth(_login(client).json()["data"]["access_token"]))
+    me = client.get("/api/v1/user/me", headers=_auth(_login(client).json()["data"]["access_token"]))
     assert me.status_code == 200, me.text
     return str(me.json()["data"]["id"])
 
@@ -266,7 +269,7 @@ def test_legacy_access_token_without_type_still_accepted(client):
         settings.SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )
-    resp = client.get("/user/me", headers=_auth(legacy))
+    resp = client.get("/api/v1/user/me", headers=_auth(legacy))
     assert resp.status_code == 200, resp.text
 
 
@@ -286,7 +289,7 @@ def test_unknown_token_type_rejected(client):
         settings.SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )
-    resp = client.get("/user/me", headers=_auth(weird))
+    resp = client.get("/api/v1/user/me", headers=_auth(weird))
     assert resp.status_code == 401
 
 
@@ -338,7 +341,7 @@ _NEW_PASSWORD = "newpass123"
 
 def _change_password(client, token: str, old_password: str, new_password: str):
     return client.post(
-        "/auth/change-password",
+        "/api/v1/auth/change-password",
         json={"old_password": old_password, "new_password": new_password},
         headers={"Authorization": f"Bearer {token}", **CSRF_HEADER},
     )
@@ -353,11 +356,12 @@ def test_change_password_success(client):
     assert resp.status_code == 200
 
     old_login = client.post(
-        "/auth/login", json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]}
+        "/api/v1/auth/login",
+        json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]},
     )
     assert old_login.status_code == 401
     new_login = client.post(
-        "/auth/login", json={"email": USER_PAYLOAD["email"], "password": _NEW_PASSWORD}
+        "/api/v1/auth/login", json={"email": USER_PAYLOAD["email"], "password": _NEW_PASSWORD}
     )
     assert new_login.status_code == 200
 
@@ -373,7 +377,7 @@ def test_change_password_wrong_old_password(client):
 
     assert (
         client.post(
-            "/auth/login",
+            "/api/v1/auth/login",
             json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]},
         ).status_code
         == 200
@@ -394,7 +398,7 @@ def test_change_password_requires_auth(client):
     _create_admin(client)
     client.cookies.clear()
     resp = client.post(
-        "/auth/change-password",
+        "/api/v1/auth/change-password",
         json={"old_password": USER_PAYLOAD["password"], "new_password": _NEW_PASSWORD},
         headers=CSRF_HEADER,
     )
@@ -405,9 +409,15 @@ def test_change_password_revokes_all_sessions(client):
     """凭证变更后终止全部会话：改动前签发的令牌立即失效，需重新登录。"""
     _create_admin(client)
     token = _login(client).json()["data"]["access_token"]
-    assert client.get("/user/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    assert (
+        client.get("/api/v1/user/me", headers={"Authorization": f"Bearer {token}"}).status_code
+        == 200
+    )
 
     resp = _change_password(client, token, USER_PAYLOAD["password"], _NEW_PASSWORD)
     assert resp.status_code == 200
 
-    assert client.get("/user/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+    assert (
+        client.get("/api/v1/user/me", headers={"Authorization": f"Bearer {token}"}).status_code
+        == 401
+    )

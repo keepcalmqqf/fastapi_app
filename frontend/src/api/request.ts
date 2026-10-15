@@ -35,7 +35,7 @@ const request = axios.create({
 })
 
 // 刷新与登录请求自身的 401 不再触发静默刷新，直接按未登录处理
-const NO_RETRY_PATHS = ['/auth/refresh', '/auth/login']
+const NO_RETRY_PATHS = ['/api/v1/auth/refresh', '/api/v1/auth/login']
 
 function isNoRetryPath(url?: string): boolean {
   return !!url && NO_RETRY_PATHS.some((p) => url.includes(p))
@@ -51,7 +51,7 @@ request.interceptors.request.use((config) => {
 // 绕过本实例直接调 refresh，避免再次进入响应拦截器造成递归
 function rawRefresh(): Promise<void> {
   return axios
-    .post('/auth/refresh', null, {
+    .post('/api/v1/auth/refresh', null, {
       baseURL: '/',
       timeout: 10000,
       withCredentials: true,
@@ -125,7 +125,7 @@ request.interceptors.response.use(
       return handleUnauthorized(error, message)
     }
     // refresh 失败时清空登录态并跳转；login 失败停留在当前页（静默，登录页自行展示错误）
-    if (error.config?.url?.includes('/auth/refresh')) {
+    if (error.config?.url?.includes('/api/v1/auth/refresh')) {
       clearSessionAndRedirect('登录已过期，请重新登录')
     }
     const authError = new Error(message) as AuthError

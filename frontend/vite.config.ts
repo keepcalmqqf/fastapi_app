@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from 'vite'
+import type { ProxyOptions } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import AutoImport from 'unplugin-auto-import/vite'
 
@@ -7,15 +8,15 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '')
   const apiTarget = env.VITE_API_TARGET || 'http://127.0.0.1:8000'
 
-  // 代理前缀必须带路径边界：字符串写法是「前缀匹配」，会把 /users、/members、
-  // /audit-logs 这些前端页面也转发给后端，拿回来的就是后端托管的旧 dist。
-  // 这里限定为「整段相等」或「其后紧跟 /」，避免页面路径被误代理。
-  const apiPrefixes = ['/auth', '/user', '/member', '/audit', '/health']
-  const apiProxy = apiPrefixes.map((prefix) => ({
-    context: (path: string) => path === prefix || path.startsWith(`${prefix}/`),
-    target: apiTarget,
-    changeOrigin: true,
-  }))
+  // 后端业务接口统一带 /api/v1 前缀（见 app/api/__init__.py 的 API_V1_PREFIX），
+  // 与前端页面路由（/login、/users 等）不共前缀，整个 /api 前缀整体代理即可；
+  // /health、/metrics 等运维端点留在根路径，不随业务版本演进
+  const apiProxy: Record<string, ProxyOptions> = {
+    '/api': {
+      target: apiTarget,
+      changeOrigin: true,
+    },
+  }
 
   return {
     plugins: [

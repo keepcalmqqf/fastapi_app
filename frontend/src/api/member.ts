@@ -14,7 +14,7 @@ export interface Member {
 
 // 分页获取会员列表（后台运营接口，需管理员令牌）
 export function listMembers(page: number, pageSize: number) {
-  return request.get<never, ApiResult<Page<Member>>>('/member/', {
+  return request.get<never, ApiResult<Page<Member>>>('/api/v1/member/', {
     params: { page, page_size: pageSize },
   })
 }

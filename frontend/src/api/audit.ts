@@ -30,5 +30,5 @@ export interface AuditLogParams {
 
 // 分页查询审计日志（需管理员令牌）
 export function listAuditLogs(params: AuditLogParams) {
-  return request.get<never, ApiResult<Page<AuditLog>>>('/audit/logs', { params })
+  return request.get<never, ApiResult<Page<AuditLog>>>('/api/v1/audit/logs', { params })
 }

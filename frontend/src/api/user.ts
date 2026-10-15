@@ -22,22 +22,22 @@ export interface AdminUser {
 
 // 获取当前登录用户信息
 export function getMe() {
-  return request.get<never, ApiResult<User>>('/user/me')
+  return request.get<never, ApiResult<User>>('/api/v1/user/me')
 }
 
 // 分页获取用户列表（需管理员令牌）
 export function listUsers(page: number, pageSize: number) {
-  return request.get<never, ApiResult<Page<AdminUser>>>('/user/', {
+  return request.get<never, ApiResult<Page<AdminUser>>>('/api/v1/user/', {
     params: { page, page_size: pageSize },
   })
 }
 
 // 更新用户（name / is_active，均为可选）
 export function updateUser(id: number, data: { name?: string; is_active?: boolean }) {
-  return request.patch<never, ApiResult<AdminUser>>(`/user/${id}`, data)
+  return request.patch<never, ApiResult<AdminUser>>(`/api/v1/user/${id}`, data)
 }
 
 // 删除用户（软删除）
 export function deleteUser(id: number) {
-  return request.delete<never, ApiResult<null>>(`/user/${id}`)
+  return request.delete<never, ApiResult<null>>(`/api/v1/user/${id}`)
 }

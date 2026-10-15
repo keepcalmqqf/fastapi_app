@@ -32,7 +32,8 @@ MEMBER_PAYLOAD = {
 
 def _login(client) -> str:
     resp = client.post(
-        "/auth/login", json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]}
+        "/api/v1/auth/login",
+        json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["data"]["access_token"]
@@ -40,26 +41,28 @@ def _login(client) -> str:
 
 def _admin_token(client) -> str:
     """空库自举创建管理员并登录，返回 admin 令牌。"""
-    resp = client.post("/user/", json=USER_PAYLOAD)
+    resp = client.post("/api/v1/user/", json=USER_PAYLOAD)
     assert resp.status_code == 200, resp.text
     return _login(client)
 
 
 def _me_id(client, token: str) -> int:
-    resp = client.get("/user/me", headers={"Authorization": f"Bearer {token}"})
+    resp = client.get("/api/v1/user/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     return resp.json()["data"]["id"]
 
 
 def _logs(client, token: str, **params) -> dict:
-    resp = client.get("/audit/logs", params=params, headers={"Authorization": f"Bearer {token}"})
+    resp = client.get(
+        "/api/v1/audit/logs", params=params, headers={"Authorization": f"Bearer {token}"}
+    )
     assert resp.status_code == 200, resp.text
     return resp.json()["data"]
 
 
 def test_create_user_audited_without_actor_on_bootstrap(client):
     """创建用户留痕；空库自举时没有操作者，actor_id 为 None。"""
-    assert client.post("/user/", json=USER_PAYLOAD).status_code == 200
+    assert client.post("/api/v1/user/", json=USER_PAYLOAD).status_code == 200
     token = _login(client)
 
     data = _logs(client, token)
@@ -76,7 +79,9 @@ def test_create_user_by_admin_records_actor(client):
     token = _admin_token(client)
     auth = {"Authorization": f"Bearer {token}"}
     created = client.post(
-        "/user/", json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"}, headers=auth
+        "/api/v1/user/",
+        json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
+        headers=auth,
     )
     assert created.status_code == 200, created.text
 
@@ -93,15 +98,18 @@ def test_update_and_delete_audited(client):
     auth = {"Authorization": f"Bearer {token}"}
 
     created = client.post(
-        "/user/", json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"}, headers=auth
+        "/api/v1/user/",
+        json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
+        headers=auth,
     )
     assert created.status_code == 200
     user_id = created.json()["data"]["id"]
 
     assert (
-        client.patch(f"/user/{user_id}", json={"name": "李小四"}, headers=auth).status_code == 200
+        client.patch(f"/api/v1/user/{user_id}", json={"name": "李小四"}, headers=auth).status_code
+        == 200
     )
-    assert client.delete(f"/user/{user_id}", headers=auth).status_code == 200
+    assert client.delete(f"/api/v1/user/{user_id}", headers=auth).status_code == 200
 
     data = _logs(client, token)
     # 按 id 倒序：最新在前
@@ -117,7 +125,7 @@ def test_login_failure_audited(client):
     client.cookies.clear()
 
     bad = client.post(
-        "/auth/login", json={"email": USER_PAYLOAD["email"], "password": "wrong-password"}
+        "/api/v1/auth/login", json={"email": USER_PAYLOAD["email"], "password": "wrong-password"}
     )
     assert bad.status_code == 401
 
@@ -128,15 +136,15 @@ def test_login_failure_audited(client):
 
 def test_member_delete_audited(client):
     """会员注销留痕，actor_type 为 member。"""
-    assert client.post("/member/register", json=MEMBER_PAYLOAD).status_code == 200
+    assert client.post("/api/v1/member/register", json=MEMBER_PAYLOAD).status_code == 200
     login = client.post(
-        "/member/login",
+        "/api/v1/member/login",
         json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
     )
     assert login.status_code == 200
     member_token = login.json()["data"]["access_token"]
 
-    resp = client.delete("/member/me", headers={"Authorization": f"Bearer {member_token}"})
+    resp = client.delete("/api/v1/member/me", headers={"Authorization": f"Bearer {member_token}"})
     assert resp.status_code == 200
 
     data = _logs(client, _admin_token(client), action=ACTION_DELETE_MEMBER)
@@ -148,15 +156,15 @@ def test_audit_logs_require_admin(client):
     """审计日志需 admin 令牌：未登录 401，会员令牌 401（aud 不匹配）。"""
     _admin_token(client)
     client.cookies.clear()
-    assert client.get("/audit/logs").status_code == 401
+    assert client.get("/api/v1/audit/logs").status_code == 401
 
-    assert client.post("/member/register", json=MEMBER_PAYLOAD).status_code == 200
+    assert client.post("/api/v1/member/register", json=MEMBER_PAYLOAD).status_code == 200
     login = client.post(
-        "/member/login",
+        "/api/v1/member/login",
         json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
     )
     member_token = login.json()["data"]["access_token"]
-    resp = client.get("/audit/logs", headers={"Authorization": f"Bearer {member_token}"})
+    resp = client.get("/api/v1/audit/logs", headers={"Authorization": f"Bearer {member_token}"})
     assert resp.status_code == 401
 
 
@@ -193,7 +201,9 @@ def test_audit_logs_pagination(client):
     assert len(data["items"]) == 1
 
     resp = client.get(
-        "/audit/logs", params={"page_size": 101}, headers={"Authorization": f"Bearer {token}"}
+        "/api/v1/audit/logs",
+        params={"page_size": 101},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 422
 
@@ -210,14 +220,17 @@ def test_audit_write_failure_does_not_break_business(client, monkeypatch):
     token = _admin_token(client)
     auth = {"Authorization": f"Bearer {token}"}
     created = client.post(
-        "/user/", json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"}, headers=auth
+        "/api/v1/user/",
+        json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
+        headers=auth,
     )
     assert created.status_code == 200, created.text
     assert _logs(client, token)["total"] == 0
 
     user_id = created.json()["data"]["id"]
     assert (
-        client.patch(f"/user/{user_id}", json={"name": "李小四"}, headers=auth).status_code == 200
+        client.patch(f"/api/v1/user/{user_id}", json={"name": "李小四"}, headers=auth).status_code
+        == 200
     )
 
 
@@ -272,7 +285,7 @@ def test_audit_logs_time_range_validation(client):
     auth = {"Authorization": f"Bearer {token}"}
 
     inverted = client.get(
-        "/audit/logs",
+        "/api/v1/audit/logs",
         params={
             "created_at_from": "2026-10-02T00:00:00Z",
             "created_at_to": "2026-10-01T00:00:00Z",
@@ -281,5 +294,7 @@ def test_audit_logs_time_range_validation(client):
     )
     assert inverted.status_code == 422
 
-    malformed = client.get("/audit/logs", params={"created_at_from": "昨天下午"}, headers=auth)
+    malformed = client.get(
+        "/api/v1/audit/logs", params={"created_at_from": "昨天下午"}, headers=auth
+    )
     assert malformed.status_code == 422

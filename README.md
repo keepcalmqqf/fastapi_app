@@ -26,7 +26,7 @@
 │   │   ├── result.py        # 统一响应 Result[T] 泛型
 │   │   ├── middleware.py    # CORS 中间件（origins 走配置）
 │   │   └── exceptions.py    # 全局异常处理（统一响应，内部细节只进日志）
-│   ├── api/                 # 路由层（自动发现注册，新增文件即生效）
+│   ├── api/                 # 路由层（自动发现注册，并统一加 /api/v1 前缀，新增文件即生效）
 │   ├── services/            # 业务逻辑层（事务边界在此）
 │   ├── repositories/        # 数据访问层（不 commit）
 │   ├── models/              # SQLAlchemy ORM 模型
@@ -91,7 +91,7 @@ uv run fastapi dev
 ```bash
 cd frontend
 npm install
-npm run dev        # http://localhost:5173，/auth /user /health 已代理到 127.0.0.1:8000
+npm run dev        # http://localhost:5173，/api 前缀已代理到 127.0.0.1:8000
 ```
 
 前端包含登录、注册和主页（展示当前登录用户）。开发期通过 Vite proxy 调后端，无需处理跨域。
@@ -109,41 +109,43 @@ cd frontend && npm run build   # 产出 frontend/dist
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/health` | 健康检查（MySQL + Redis 连通性，组件 down 时 503） |
-| POST | `/auth/login` | 登录，返回 `TokenOut`（access + refresh 双令牌）并种下双 HttpOnly Cookie（账号不存在/密码错误/已禁用一律 401） |
-| POST | `/auth/refresh` | 刷新令牌（轮换制：旧 refresh 一次性使用，cookie 优先、body 兜底） |
-| POST | `/auth/logout` | 登出：access jti 进黑名单 + refresh jti 删除 + 清 Cookie |
-| POST | `/auth/change-password` | 修改当前登录用户密码（校验原密码，新密码沿用强度规则；成功后终止该账号全部会话） |
-| POST | `/member/register` | 会员注册（公开） |
-| POST | `/member/login` | 会员登录（同 `/auth/login`，aud=member） |
-| POST | `/member/refresh` | 会员刷新令牌 |
-| POST | `/member/logout` | 会员登出并撤销令牌 |
-| POST | `/member/change-password` | 修改当前登录会员密码（同 `/auth/change-password`） |
-| POST | `/member/verify-email` | 凭验证邮件链接中的 token 标记邮箱已验证（公开，token 即凭证） |
-| POST | `/member/resend-verification` | 重发验证邮件（member 令牌，已验证则返回无需重发） |
-| GET | `/member/me` | 获取当前登录会员（member 令牌） |
-| PATCH | `/member/me` | 更新当前会员昵称（member 令牌） |
-| DELETE | `/member/me` | 注销当前会员（软删除并撤销令牌） |
-| GET | `/member/` | 分页获取会员列表（admin 令牌） |
-| GET | `/user/{user_id}` | 通过用户 id 获取用户（不存在 404） |
-| POST | `/user/` | 创建用户；空库时首个管理员可自举（`ALLOW_BOOTSTRAP`，PROD 默认关闭），表非空需 admin 令牌；密码 Argon2 哈希入库 |
-| GET | `/user/me` | 获取当前登录用户（admin 令牌） |
-| GET | `/user/` | 分页获取用户列表（admin 令牌，`page` 1-10000、`page_size` 1-100 默认 20） |
-| PATCH | `/user/{user_id}` | 更新用户（admin，`{name?,is_active?}`，不存在 404）；置 `is_active=false` 会撤销该账号全部令牌 |
-| DELETE | `/user/{user_id}` | 软删除用户（admin，删自己 400）；同时撤销该账号全部令牌 |
-| POST | `/user/verify-email` | 验证后台账号邮箱 |
-| POST | `/user/resend-verification` | 重发后台账号验证邮件（admin 令牌） |
-| GET | `/audit/logs` | 分页查询审计日志（admin 令牌，可按 `action`/`actor_id` 过滤，按时间倒序） |
+| POST | `/api/v1/auth/login` | 登录，返回 `TokenOut`（access + refresh 双令牌）并种下双 HttpOnly Cookie（账号不存在/密码错误/已禁用一律 401） |
+| POST | `/api/v1/auth/refresh` | 刷新令牌（轮换制：旧 refresh 一次性使用，cookie 优先、body 兜底） |
+| POST | `/api/v1/auth/logout` | 登出：access jti 进黑名单 + refresh jti 删除 + 清 Cookie |
+| POST | `/api/v1/auth/change-password` | 修改当前登录用户密码（校验原密码，新密码沿用强度规则；成功后终止该账号全部会话） |
+| POST | `/api/v1/member/register` | 会员注册（公开） |
+| POST | `/api/v1/member/login` | 会员登录（同 `/api/v1/auth/login`，aud=member） |
+| POST | `/api/v1/member/refresh` | 会员刷新令牌 |
+| POST | `/api/v1/member/logout` | 会员登出并撤销令牌 |
+| POST | `/api/v1/member/change-password` | 修改当前登录会员密码（同 `/api/v1/auth/change-password`） |
+| POST | `/api/v1/member/verify-email` | 凭验证邮件链接中的 token 标记邮箱已验证（公开，token 即凭证） |
+| POST | `/api/v1/member/resend-verification` | 重发验证邮件（member 令牌，已验证则返回无需重发） |
+| GET | `/api/v1/member/me` | 获取当前登录会员（member 令牌） |
+| PATCH | `/api/v1/member/me` | 更新当前会员昵称（member 令牌） |
+| DELETE | `/api/v1/member/me` | 注销当前会员（软删除并撤销令牌） |
+| GET | `/api/v1/member/` | 分页获取会员列表（admin 令牌） |
+| GET | `/api/v1/user/{user_id}` | 通过用户 id 获取用户（不存在 404） |
+| POST | `/api/v1/user/` | 创建用户；空库时首个管理员可自举（`ALLOW_BOOTSTRAP`，PROD 默认关闭），表非空需 admin 令牌；密码 Argon2 哈希入库 |
+| GET | `/api/v1/user/me` | 获取当前登录用户（admin 令牌） |
+| GET | `/api/v1/user/` | 分页获取用户列表（admin 令牌，`page` 1-10000、`page_size` 1-100 默认 20） |
+| PATCH | `/api/v1/user/{user_id}` | 更新用户（admin，`{name?,is_active?}`，不存在 404）；置 `is_active=false` 会撤销该账号全部令牌 |
+| DELETE | `/api/v1/user/{user_id}` | 软删除用户（admin，删自己 400）；同时撤销该账号全部令牌 |
+| POST | `/api/v1/user/verify-email` | 验证后台账号邮箱 |
+| POST | `/api/v1/user/resend-verification` | 重发后台账号验证邮件（admin 令牌） |
+| GET | `/api/v1/audit/logs` | 分页查询审计日志（admin 令牌，可按 `action`/`actor_id` 过滤，按时间倒序） |
 
-路径约定统一为 REST 风格：集合资源用复数前缀的斜杠结尾形式（`GET /user/`、`POST /user/`），
-单个资源用路径参数（`GET /user/{user_id}`）。早期的 RPC 风格路径
+所有业务接口统一挂在 `/api/v1` 版本前缀下（由 `register_routers` 自动添加，新增模块无需关心），
+路径风格统一为 REST：集合资源用斜杠结尾形式（`GET /api/v1/user/`、`POST /api/v1/user/`），
+单个资源用路径参数（`GET /api/v1/user/{user_id}`）。早期的 RPC 风格路径
 （`/user/list`、`/user/get_user?user_id=`、`/user/create_user`、`/member/list`）已彻底移除，
-不再保留兼容别名。认证与验证类动作仍用动词路径（`/auth/login`、`/member/verify-email`）。
+不再保留兼容别名。认证与验证类动作仍用动词路径（`/api/v1/auth/login`、`/api/v1/member/verify-email`）。
+`/health`、`/metrics`、`/docs` 为运维端点，不参与版本化，保留在根路径。
 
 注册/创建用户的密码策略：8-64 位且同时包含字母和数字；name/nickname 2-32 位、去空白后非空；email 统一小写归一化。软删除不释放邮箱唯一约束，已删账号邮箱再注册返回 409。
 
-邮箱验证：会员注册会自动投递验证邮件，`POST /member/verify-email` 凭 token 完成验证。**默认不强制**（`REQUIRE_EMAIL_VERIFICATION=false`，未验证也能登录），置为 `true` 后未验证账号登录返回 403。脚手架不内置 SMTP，`app/services/mailer.py` 的默认实现只把验证链接写进日志，接入真实邮件服务时替换该函数即可。
+邮箱验证：会员注册会自动投递验证邮件，`POST /api/v1/member/verify-email` 凭 token 完成验证。**默认不强制**（`REQUIRE_EMAIL_VERIFICATION=false`，未验证也能登录），置为 `true` 后未验证账号登录返回 403。脚手架不内置 SMTP，`app/services/mailer.py` 的默认实现只把验证链接写进日志，接入真实邮件服务时替换该函数即可。
 
-审计日志：账号创建/更新/删除、改密、会员注销、登录失败都会写入 `audit_log`，用 `GET /audit/logs` 查询。审计有自己的事务边界（写完立即提交），写入失败只记日志、不影响业务结果。
+审计日志：账号创建/更新/删除、改密、会员注销、登录失败都会写入 `audit_log`，用 `GET /api/v1/audit/logs` 查询。审计有自己的事务边界（写完立即提交），写入失败只记日志、不影响业务结果。
 
 认证要点：access token 默认 30 分钟、refresh token 默认 7 天；后台（`aud=admin`）与会员（`aud=member`）令牌互不通用。access token 带 `type="access"`、refresh token 带 `type="refresh"`，**受保护接口只接受访问令牌，refresh 令牌直接当访问令牌用一律 401**（否则登出后凭长效 refresh 令牌仍可操作后台接口）。登出只让当前设备的令牌失效；**停用/软删用户、会员注销则撤销该账号全部令牌（含其他设备）**，重新启用也不会复活旧会话。取令牌顺序为 `Authorization: Bearer` 优先、其次 `access_token` Cookie；**Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须携带 `X-Requested-With: XMLHttpRequest`，否则 403**（Bearer 来源不受此约束）。
 
@@ -156,23 +158,23 @@ cd frontend && npm run build   # 产出 frontend/dist
 调用受保护接口（方式一：Bearer token）：
 
 ```bash
-TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"zhangsan@test.com","password":"abcd1234"}' | jq -r .data.access_token)
 
-curl http://127.0.0.1:8000/user/me -H "Authorization: Bearer $TOKEN"
+curl http://127.0.0.1:8000/api/v1/user/me -H "Authorization: Bearer $TOKEN"
 ```
 
 方式二：登录后由 Cookie 会话直接访问（写请求需带 CSRF 头）：
 
 ```bash
-curl -c cookie.jar -X POST http://127.0.0.1:8000/auth/login \
+curl -c cookie.jar -X POST http://127.0.0.1:8000/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"zhangsan@test.com","password":"abcd1234"}'
 
-curl -b cookie.jar http://127.0.0.1:8000/user/me
+curl -b cookie.jar http://127.0.0.1:8000/api/v1/user/me
 
-curl -b cookie.jar -X POST http://127.0.0.1:8000/user/ \
+curl -b cookie.jar -X POST http://127.0.0.1:8000/api/v1/user/ \
   -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' \
   -d '{"name":"李四","email":"lisi@test.com","password":"abcd1234"}'
