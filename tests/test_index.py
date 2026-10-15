@@ -1,3 +1,38 @@
+import pytest
+from starlette.applications import Starlette
+from starlette.testclient import TestClient as StarletteClient
+
+from app.core.static import SPAStaticFiles
+
+
+@pytest.fixture
+def spa_app(tmp_path):
+    """只挂 SPA 静态托管的裸应用，用来单独验证回退规则（不依赖真实前端产物）。"""
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+    app = Starlette()
+    app.mount("/", SPAStaticFiles(directory=str(dist), html=True))
+    return StarletteClient(app)
+
+
+def test_spa_unknown_path_falls_back_to_index(spa_app):
+    """非 API 前缀的未知路径回退 index.html，交给前端路由。"""
+    resp = spa_app.get("/some/spa/route")
+    assert resp.status_code == 200
+    assert "spa" in resp.text
+
+
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/user/1/x"])
+def test_api_prefixes_do_not_fall_back_to_spa(spa_app, path):
+    """API 前缀未命中必须 404，不能回退成前端 index.html。
+
+    /redoc 曾漏出白名单：PROD 关闭文档后它会返回 200 + 前端 HTML，
+    与 /docs、/openapi.json 的 404 语义不一致。
+    """
+    assert spa_app.get(path).status_code == 404
+
+
 def test_api_info(client):
     resp = client.get("/api/info")
     assert resp.status_code == 200

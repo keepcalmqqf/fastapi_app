@@ -7,7 +7,7 @@ from typing import TypeVar
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from app.api import health as health_module
 from app.core.database import get_db
@@ -20,7 +20,11 @@ from app.models import Base
 _TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
 if _TEST_DATABASE_URL:
-    async_engine = create_async_engine(_TEST_DATABASE_URL, pool_pre_ping=True)
+    # 真实数据库必须用 NullPool：本文件的 asyncio.run(...) 与 TestClient 内部各跑在
+    # 不同的事件循环上，连接池一旦复用连接，第二次使用就会撞上
+    # "Task ... attached to a different loop"。每次新建连接即可绕开。
+    # （SQLite 分支用 StaticPool 强制单连接，aiosqlite 对跨循环复用不敏感，故不受影响）
+    async_engine = create_async_engine(_TEST_DATABASE_URL, pool_pre_ping=True, poolclass=NullPool)
 else:
     async_engine = create_async_engine(
         "sqlite+aiosqlite://",

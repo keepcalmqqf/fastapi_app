@@ -12,6 +12,7 @@ API_PREFIXES = (
     "/health",
     "/metrics",
     "/docs",
+    "/redoc",
     "/openapi.json",
 )
 

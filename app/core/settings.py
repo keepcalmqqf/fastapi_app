@@ -1,4 +1,4 @@
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     # 可插拔能力开关
     ENABLE_RATE_LIMIT: bool = False
     RATE_LIMIT: str = "100/minute"
+    # 限流计数存储：留空时用进程内存。多 worker 部署下各进程独立计数，
+    # 实际阈值会放大为 RATE_LIMIT × worker 数（实测 2 worker + 100/minute ≈ 200/minute）。
+    # 需要全局精确限额时指到 Redis，例如 redis://:密码@redis:6379/0。
+    RATE_LIMIT_STORAGE_URI: str | None = None
     ENABLE_METRICS: bool = False
     ENABLE_REQUEST_ID: bool = True
     ENABLE_MEMBER: bool = True
@@ -172,19 +176,24 @@ class Settings(BaseSettings):
 
         用户名与密码经 URL 编码：密码里含 `@ / : # ?` 等字符时，未编码会拼出
         非法连接串（如 `p@ss/w:rd` 会被解析成别的主机与端口）。
+
+        用 quote（而非 quote_plus）：userinfo 里的 `+` 是字面加号，不会被解成
+        空格，密码含空格时 quote_plus 会把它错误地改写；quote 编成 `%20` 才正确。
         """
+        return self._build_url("mysql+pymysql")
+
+    def _build_url(self, drivername: str) -> str:
+        user = quote(self.MYSQL_USER, safe="")
+        password = quote(self.MYSQL_PASSWORD, safe="")
         return (
-            f"mysql+pymysql://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
+            f"{drivername}://{user}:{password}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
         )
 
     @property
     def SQLALCHEMY_ASYNC_DATABASE_URL(self) -> str:
         """异步连接串（mysql+asyncmy），应用运行时使用（凭据同样做 URL 编码）。"""
-        return (
-            f"mysql+asyncmy://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
-            f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
-        )
+        return self._build_url("mysql+asyncmy")
 
 
 settings = Settings()

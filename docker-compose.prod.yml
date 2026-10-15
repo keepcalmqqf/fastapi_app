@@ -58,6 +58,11 @@ services:
       # 值偏保守（100/minute 按 IP 计），如需对登录接口单独收紧请在网关侧配置。
       ENABLE_RATE_LIMIT: "true"
       RATE_LIMIT: "100/minute"
+      # 限流计数挪到 Redis：否则 N 个 worker 各有内存计数，实际阈值放大成 100 × N
+      RATE_LIMIT_STORAGE_URI: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+      # 生产建议开启指标采集；不配 METRICS_TOKEN 时 /metrics 公开，务必一起设置
+      ENABLE_METRICS: "true"
+      METRICS_TOKEN: ${METRICS_TOKEN}
       # 空库自举：保持关闭（默认），首个管理员由运维用 CLI/脚本创建，
       # 避免服务启动后任何人抢先调用 /user/ 成为管理员
       ALLOW_BOOTSTRAP: "false"

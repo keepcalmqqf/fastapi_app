@@ -10,10 +10,22 @@
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.engine import make_url
 
 from app.core.settings import _DEV_SECRET_KEY, Settings
 
 STRONG_KEY = "x" * 32  # 恰好 32 字节，为允许下限
+
+
+@pytest.fixture(autouse=True)
+def clear_db_host_env(monkeypatch):
+    """屏蔽外部 MYSQL_HOST / REDIS_HOST。
+
+    下面多个用例验证的是「未配置时按 MODE 回落到 docker 服务名」这一默认行为，
+    而 CI/本地可能为迁移步骤设置了 MYSQL_HOST，不隔离会让断言误失败。
+    """
+    monkeypatch.delenv("MYSQL_HOST", raising=False)
+    monkeypatch.delenv("REDIS_HOST", raising=False)
 
 
 def test_dev_default_secret_key_passes_strength_check():
@@ -92,6 +104,41 @@ def test_db_credentials_are_url_encoded():
     assert "u%231" in s.SQLALCHEMY_DATABASE_URL
     assert "p%40ss%2Fw%3Ard" in s.SQLALCHEMY_DATABASE_URL
     assert "p%40ss%2Fw%3Ard" in s.SQLALCHEMY_ASYNC_DATABASE_URL
+
+
+def test_db_password_space_encoded_as_percent20():
+    """userinfo 中 `+` 是字面加号，空格必须编成 `%20`（quote_plus 会错编成 `+`）。"""
+    s = Settings(MYSQL_PASSWORD="p ss", _env_file=None)
+    url = s.SQLALCHEMY_DATABASE_URL
+    assert "p%20ss" in url  # 空格编成 %20，而非 quote_plus 的 +
+    assert make_url(url).password == "p ss"
+
+
+def test_encoded_db_url_roundtrips_original_credentials():
+    """编码后的连接串必须能被 SQLAlchemy 还原成原用户名与密码。"""
+    s = Settings(MYSQL_USER="u#1", MYSQL_PASSWORD="p@ss w/!rd%", _env_file=None)
+    for url in (s.SQLALCHEMY_DATABASE_URL, s.SQLALCHEMY_ASYNC_DATABASE_URL):
+        parsed = make_url(url)
+        assert parsed.username == "u#1"
+        assert parsed.password == "p@ss w/!rd%"
+    assert make_url(s.SQLALCHEMY_DATABASE_URL).get_driver_name() == "pymysql"
+    assert make_url(s.SQLALCHEMY_ASYNC_DATABASE_URL).get_driver_name() == "asyncmy"
+
+
+def test_encoded_url_must_not_be_written_into_alembic_config():
+    """回归：含 `%` 的 URL 写回 alembic 配置会因 configparser 插值而崩溃。
+
+    早期 env.py 用 `config.set_main_option("sqlalchemy.url", ...)` 注入连接串，
+    密码含 `!`（编码为 `%21`）时 alembic 直接抛 "invalid interpolation syntax"。
+    本用例锁定这个前提，说明 env.py 为什么必须绕过配置、直接把 URL 交给 SQLAlchemy。
+    """
+    from alembic.config import Config
+
+    s = Settings(MYSQL_PASSWORD="Str0ngPass!2026", _env_file=None)
+    url = s.SQLALCHEMY_DATABASE_URL
+    assert "%" in url  # 前提：强密码编码后必然含百分号
+    with pytest.raises(ValueError, match="interpolation"):
+        Config().set_main_option("sqlalchemy.url", url)
 
 
 def test_blank_padded_secret_key_rejected():

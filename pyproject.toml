@@ -20,6 +20,11 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=8.1.0",
     "asyncmy>=0.2.15",
     "greenlet>=3.5.6",
+    # asyncmy 的 caching_sha2_password 握手依赖它：MySQL 8 默认该认证方式，
+    # 且服务端认证缓存为空（首次连接、MySQL 重启/主从切换后）时必须走 RSA 加密，
+    # 缺包会直接 RuntimeError 连不上库。PyMySQL 自带实现不受影响，所以只有
+    # 应用运行时的异步驱动受影响——缺失时表现为「重启 MySQL 后服务连不上」。
+    "cryptography>=42",
 ]
 
 [dependency-groups]

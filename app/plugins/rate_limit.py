@@ -90,7 +90,14 @@ class _DefaultLimitMiddleware(BaseHTTPMiddleware):
 
 
 def setup(app: FastAPI) -> None:
-    limiter = Limiter(key_func=get_remote_address, default_limits=[settings.RATE_LIMIT])
+    limiter = Limiter(
+        key_func=get_remote_address,
+        default_limits=[settings.RATE_LIMIT],
+        # 响应头（X-RateLimit-Limit/Remaining/Reset）便于客户端自行退避
+        headers_enabled=True,
+        # 共享存储：多 worker 时内存计数各进程独立，实际阈值会被放大
+        storage_uri=settings.RATE_LIMIT_STORAGE_URI,
+    )
     missing = _missing_internals(limiter)
     if missing:
         # 依赖的私有入口不存在：显式关闭限流并告警，而不是让它悄悄变成空操作

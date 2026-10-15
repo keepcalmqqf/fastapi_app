@@ -244,13 +244,20 @@ def test_refresh_token_unusable_as_access_token_after_logout(client):
     assert resp.status_code == 401
 
 
+def _admin_id(client) -> str:
+    """当前首个管理员的 id（不假设为 1：MySQL 的自增计数不会因清表回退）。"""
+    me = client.get("/user/me", headers=_auth(_login(client).json()["data"]["access_token"]))
+    assert me.status_code == 200, me.text
+    return str(me.json()["data"]["id"])
+
+
 def test_legacy_access_token_without_type_still_accepted(client):
     """兼容性：历史 access 令牌无 type 字段时仍可访问（白名单放行 None 与 "access"）。"""
     _create_admin(client)
     now = datetime.now(timezone.utc)
     legacy = jwt.encode(
         {
-            "sub": "1",
+            "sub": _admin_id(client),
             "aud": "admin",
             "iat": now,
             "exp": now + timedelta(minutes=5),
@@ -269,7 +276,7 @@ def test_unknown_token_type_rejected(client):
     now = datetime.now(timezone.utc)
     weird = jwt.encode(
         {
-            "sub": "1",
+            "sub": _admin_id(client),
             "aud": "admin",
             "type": "reset",
             "iat": now,

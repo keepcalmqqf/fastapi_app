@@ -132,6 +132,37 @@ def test_header_injection_failure_does_not_break_response(monkeypatch):
         assert resp.json() == {"ok": True}
 
 
+def test_rate_limit_headers_exposed(monkeypatch):
+    """响应带 X-RateLimit-* 头，客户端可据此自行退避（headers_enabled 曾为默认 False）。"""
+    monkeypatch.setattr(settings, "RATE_LIMIT", "5/minute")
+    with TestClient(_decorated_app()) as client:
+        resp = client.get("/ping")
+
+    assert resp.status_code == 200
+    assert resp.headers.get("x-ratelimit-limit") == "5"
+
+
+def test_shared_storage_uri_and_headers_are_forwarded(monkeypatch):
+    """配置了共享存储时必须真的传给 Limiter。
+
+    多 worker 部署下内存计数各进程独立，实际阈值会放大成 RATE_LIMIT × worker 数
+    （实测 2 worker + 100/minute 约等于 200/minute），只有共享存储才能让限额全局生效。
+    """
+    captured: dict[str, object] = {}
+    real_init = Limiter.__init__
+
+    def spy(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Limiter, "__init__", spy)
+    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE_URI", "redis://redis:6379/0")
+
+    _decorated_app()
+    assert captured["storage_uri"] == "redis://redis:6379/0"
+    assert captured["headers_enabled"] is True
+
+
 def test_incompatible_limiter_disables_rate_limiting():
     """依赖的 slowapi 私有入口缺失时，限流显式关闭而不是静默失效。"""
 
