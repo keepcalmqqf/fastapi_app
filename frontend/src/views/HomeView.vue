@@ -38,6 +38,7 @@ onMounted(loadMe)
           <div>
             <el-button @click="router.push('/users')">用户管理</el-button>
             <el-button @click="router.push('/members')">会员管理</el-button>
+            <el-button @click="router.push('/audit-logs')">审计日志</el-button>
             <el-button type="danger" plain @click="onLogout">退出登录</el-button>
           </div>
         </div>

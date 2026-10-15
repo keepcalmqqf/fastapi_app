@@ -9,6 +9,7 @@
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,5 +81,15 @@ async def list_logs(
     *,
     action: str | None = None,
     actor_id: int | None = None,
+    created_at_from: datetime | None = None,
+    created_at_to: datetime | None = None,
 ) -> tuple[list[Any], int]:
-    return await audit_repo.list_logs(db, page, page_size, action=action, actor_id=actor_id)
+    return await audit_repo.list_logs(
+        db,
+        page,
+        page_size,
+        action=action,
+        actor_id=actor_id,
+        created_at_from=created_at_from,
+        created_at_to=created_at_to,
+    )

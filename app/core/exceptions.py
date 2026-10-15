@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from redis.exceptions import RedisError
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -12,18 +13,34 @@ from app.core import result
 logger = logging.getLogger("fastapi_app")
 
 
+def _validation_response(exc: ValidationError | RequestValidationError) -> JSONResponse:
+    errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg", "")} for e in exc.errors()]
+    return JSONResponse(
+        status_code=422,
+        content=result.Result(
+            code=422, data={"errors": errors}, message="请求参数校验失败"
+        ).model_dump(),
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg", "")} for e in exc.errors()]
-        return JSONResponse(
-            status_code=422,
-            content=result.Result(
-                code=422, data={"errors": errors}, message="请求参数校验失败"
-            ).model_dump(),
-        )
+        return _validation_response(exc)
+
+    @app.exception_handler(ValidationError)
+    async def pydantic_validation_handler(request: Request, exc: ValidationError) -> JSONResponse:
+        """兜底：类依赖内部的跨字段校验错误不走标准参数校验流程。
+
+        用 `Depends()` 挂载的模型依赖（如 PageParams、AuditLogQuery）在构造时抛出的
+        ValidationError，只有字段级错误会被 FastAPI 包装成 RequestValidationError；
+        model_validator 这类跨字段校验的错误会原样冒泡，没有本兜底就会掉进通用
+        Exception 处理器变成 500——调用方看到的是「服务器内部错误」而非参数问题。
+        """
+        logger.warning("请求参数校验失败: %s %s", request.method, request.url.path)
+        return _validation_response(exc)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:

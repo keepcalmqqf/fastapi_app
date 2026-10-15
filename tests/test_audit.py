@@ -1,7 +1,11 @@
 """审计日志测试：写操作留痕、登录失败留痕、查询鉴权、审计故障不影响业务。"""
 
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import AuditLog
 from app.services.audit import (
     ACTION_CREATE_USER,
     ACTION_DELETE_MEMBER,
@@ -9,6 +13,8 @@ from app.services.audit import (
     ACTION_LOGIN_FAILED,
     ACTION_UPDATE_USER,
 )
+
+from .conftest import run_db
 
 USER_PAYLOAD: dict[str, Any] = {
     "name": "张三",
@@ -154,6 +160,30 @@ def test_audit_logs_require_admin(client):
     assert resp.status_code == 401
 
 
+def _seed_logs(*moments: str) -> None:
+    """按指定 UTC 时刻直接落日志（created_at 取 apply default 之外的确定值）。
+
+    业务接口写入的时间不可控，时间范围过滤只能靠定值数据验证。
+    action 用 update 以便与管理端自举产生的 user.create 区分。
+    """
+
+    async def _insert(db: AsyncSession) -> None:
+        for i, moment in enumerate(moments):
+            db.add(
+                AuditLog(
+                    created_at=datetime.fromisoformat(moment),
+                    actor_type="admin",
+                    actor_id=1,
+                    action=ACTION_UPDATE_USER,
+                    target_type="user",
+                    target_id=f"target-{i}",
+                )
+            )
+        await db.commit()
+
+    run_db(_insert)
+
+
 def test_audit_logs_pagination(client):
     """审计日志分页返回 Page 结构，page_size 越界 422。"""
     token = _admin_token(client)
@@ -189,3 +219,67 @@ def test_audit_write_failure_does_not_break_business(client, monkeypatch):
     assert (
         client.patch(f"/user/{user_id}", json={"name": "李小四"}, headers=auth).status_code == 200
     )
+
+
+def test_audit_logs_filter_by_time_range(client):
+    """按创建时间过滤：区间外的记录被排除，结果仍按 id 倒序。"""
+    token = _admin_token(client)
+    _seed_logs(
+        "2026-10-01T10:00:00",
+        "2026-10-01T12:00:00",
+        "2026-10-01T14:00:00",
+    )
+
+    data = _logs(
+        client,
+        token,
+        action=ACTION_UPDATE_USER,
+        created_at_from="2026-10-01T11:00:00Z",
+        created_at_to="2026-10-01T13:00:00Z",
+    )
+    assert data["total"] == 1
+    assert data["items"][0]["target_id"] == "target-1"
+
+
+def test_audit_logs_time_range_accepts_offset(client):
+    """带时区偏移的入参先换算到 UTC 再比较，闭区间端点包含。"""
+    token = _admin_token(client)
+    _seed_logs("2026-10-01T12:00:00")
+
+    # 东八区 20:00 == UTC 12:00：起点正好落在记录时刻上，闭区间应命中
+    data = _logs(
+        client,
+        token,
+        action=ACTION_UPDATE_USER,
+        created_at_from="2026-10-01T19:59:59+08:00",
+        created_at_to="2026-10-01T20:00:00+08:00",
+    )
+    assert data["total"] == 1
+
+    # 起点晚一秒（UTC 12:00:01）即落在记录之后
+    data = _logs(
+        client,
+        token,
+        action=ACTION_UPDATE_USER,
+        created_at_from="2026-10-01T20:00:01+08:00",
+    )
+    assert data["total"] == 0
+
+
+def test_audit_logs_time_range_validation(client):
+    """时间参数非法一律 422：区间颠倒、格式不合法。"""
+    token = _admin_token(client)
+    auth = {"Authorization": f"Bearer {token}"}
+
+    inverted = client.get(
+        "/audit/logs",
+        params={
+            "created_at_from": "2026-10-02T00:00:00Z",
+            "created_at_to": "2026-10-01T00:00:00Z",
+        },
+        headers=auth,
+    )
+    assert inverted.status_code == 422
+
+    malformed = client.get("/audit/logs", params={"created_at_from": "昨天下午"}, headers=auth)
+    assert malformed.status_code == 422

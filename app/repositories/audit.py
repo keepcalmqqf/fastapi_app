@@ -38,13 +38,23 @@ async def list_logs(
     *,
     action: str | None = None,
     actor_id: int | None = None,
+    created_at_from: Any = None,
+    created_at_to: Any = None,
 ) -> tuple[list[AuditLog], int]:
-    """分页查询审计日志，按 id 倒序（最新在前）；支持按动作与操作者过滤。"""
+    """分页查询审计日志，按 id 倒序（最新在前）；支持动作、操作者与创建时间区间过滤。
+
+    时间入参由 Schema 层归一化成 UTC 朴素时间，可直接与库内 created_at 比较；
+    区间两端均为闭区间。
+    """
     conditions: list[Any] = []
     if action:
         conditions.append(AuditLog.action == action)
     if actor_id is not None:
         conditions.append(AuditLog.actor_id == actor_id)
+    if created_at_from is not None:
+        conditions.append(AuditLog.created_at >= created_at_from)
+    if created_at_to is not None:
+        conditions.append(AuditLog.created_at <= created_at_to)
 
     total = await db.scalar(select(func.count()).select_from(AuditLog).where(*conditions))
     result = await db.scalars(

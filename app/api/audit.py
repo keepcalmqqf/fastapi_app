@@ -13,7 +13,11 @@ from app.services import audit as audit_service
 router = APIRouter(prefix="/audit", tags=["审计"])
 
 
-@router.get("/logs", summary="分页查询审计日志（admin）", response_model=Result[Page[AuditLogOut]])
+@router.get(
+    "/logs",
+    summary="分页查询审计日志（admin）",
+    response_model=Result[Page[AuditLogOut]],
+)
 async def list_logs(
     params: PageParams = Depends(),
     query: AuditLogQuery = Depends(),
@@ -26,6 +30,8 @@ async def list_logs(
         params.page_size,
         action=query.action,
         actor_id=query.actor_id,
+        created_at_from=query.created_at_from,
+        created_at_to=query.created_at_to,
     )
     page = Page[AuditLogOut](
         total=total,
