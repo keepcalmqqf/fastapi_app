@@ -28,7 +28,7 @@ const statCards = computed(() => [
     label: '管理员用户',
     value: stats.users,
     icon: 'User',
-    color: '#409eff',
+    color: 'var(--el-color-primary)',
     route: 'users',
   },
   {
@@ -36,7 +36,7 @@ const statCards = computed(() => [
     label: '会员总数',
     value: stats.members,
     icon: 'Avatar',
-    color: '#67c23a',
+    color: 'var(--el-color-success)',
     route: 'members',
   },
   {
@@ -44,7 +44,7 @@ const statCards = computed(() => [
     label: '审计日志',
     value: stats.logs,
     icon: 'Document',
-    color: '#e6a23c',
+    color: 'var(--el-color-warning)',
     route: 'audit-logs',
   },
 ])
@@ -107,7 +107,9 @@ function actorLabel(row: AuditLog): string {
       <el-col :xs="24" :sm="12" :lg="8">
         <el-card class="stat-card" shadow="never">
           <div class="stat-card__body">
-            <el-icon class="stat-card__icon" style="background: #909399"><UserFilled /></el-icon>
+            <el-icon class="stat-card__icon" style="background: var(--el-text-color-secondary)">
+              <UserFilled />
+            </el-icon>
             <div>
               <div class="stat-card__label">当前账号</div>
               <div class="stat-card__value stat-card__value--sm">
@@ -191,12 +193,12 @@ function actorLabel(row: AuditLog): string {
   width: 44px;
   height: 44px;
   border-radius: 8px;
-  color: #fff;
+  color: var(--el-color-white);
   font-size: 22px;
 }
 
 .stat-card__label {
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 

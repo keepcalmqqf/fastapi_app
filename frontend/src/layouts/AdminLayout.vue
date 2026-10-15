@@ -96,17 +96,17 @@ function onCommand(command: string) {
 
           <el-dropdown trigger="click" @command="onCommand">
             <span class="admin-user">
-            <el-avatar :size="28" class="admin-user__avatar">{{ initial }}</el-avatar>
-            <span class="admin-user__name">{{ authStore.user?.name ?? '未登录' }}</span>
-            <el-icon><ArrowDown /></el-icon>
-          </span>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <div class="admin-user__email">{{ authStore.user?.email ?? '-' }}</div>
-              <el-dropdown-item command="profile">个人资料</el-dropdown-item>
-              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
+              <el-avatar :size="28" class="admin-user__avatar">{{ initial }}</el-avatar>
+              <span class="admin-user__name">{{ authStore.user?.name ?? '未登录' }}</span>
+              <el-icon><ArrowDown /></el-icon>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <div class="admin-user__email">{{ authStore.user?.email ?? '-' }}</div>
+                <el-dropdown-item command="profile">个人资料</el-dropdown-item>
+                <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
           </el-dropdown>
         </div>
       </el-header>
@@ -155,8 +155,8 @@ function onCommand(command: string) {
   height: 28px;
   flex-shrink: 0;
   border-radius: 6px;
-  background: #409eff;
-  color: #fff;
+  background: var(--el-color-primary);
+  color: var(--el-color-white);
   font-size: 13px;
   font-weight: 700;
 }
@@ -206,7 +206,8 @@ function onCommand(command: string) {
 }
 
 .admin-user__avatar {
-  background: #409eff;
+  background: var(--el-color-primary);
+  color: var(--el-color-white);
   font-size: 13px;
 }
 

@@ -70,17 +70,35 @@ async function loadLogs() {
   }
 }
 
+// 筛选条件序列化成 key 后再 watch：el-input-number / el-select 在 input 与 change 时
+// 各会改一次值，直接 watch 三个 ref 会对同一次操作发两遍相同请求；
+// 改成 watch 派生 key，只有条件真正变化时才触发一次。
+// 时间范围也走 400ms 防抖，避免边调日期边连续请求。
+const filterKey = computed(() =>
+  JSON.stringify([
+    action.value.trim(),
+    actorId.value ?? null,
+    timeRange.value?.map((item) => item?.toISOString()) ?? null,
+  ]),
+)
+
+watchDebounced(filterKey, onSearch, { debounce: 400 })
+
 function onSearch() {
   page.value = 1
   loadLogs()
 }
 
 function onReset() {
+  const hadFilters = action.value !== '' || actorId.value !== null || timeRange.value !== null
   action.value = ''
   actorId.value = null
   timeRange.value = null
-  page.value = 1
-  loadLogs()
+  // 条件本就是空的，watch 不会触发，这里显式回到第一页刷新
+  if (!hadFilters) {
+    page.value = 1
+    loadLogs()
+  }
 }
 
 function onPageChange(p: number) {
@@ -102,10 +120,6 @@ function openDetail(row: AuditLog) {
   detailRow.value = row
   detailVisible.value = true
 }
-
-// 筛选条件变化即自动查询：文本类输入防抖 400ms，时间范围选定后立即触发
-watchDebounced([action, actorId], onSearch, { debounce: 400 })
-watch(timeRange, onSearch)
 
 onMounted(loadLogs)
 </script>
