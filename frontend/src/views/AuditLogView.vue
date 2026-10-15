@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { listAuditLogs } from '../api/audit'
 import type { AuditLog, AuditLogParams } from '../api/audit'
-
-const router = useRouter()
+import { formatTime, toUtcIso } from '../utils/datetime'
 
 const loading = ref(false)
 const logs = ref<AuditLog[]>([])
@@ -38,13 +35,6 @@ function actionTagType(value: string): TagType {
   return 'info'
 }
 
-// 后端以 UTC 写入且不带时区偏移，补 Z 后再本地化，避免被当成其他时区解读
-function formatTime(value: string | null): string {
-  if (!value) return '-'
-  const normalized = /(Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`
-  return new Date(normalized).toLocaleString('zh-CN', { hour12: false })
-}
-
 function formatDetail(detail: string | null): string {
   if (!detail) return '无'
   try {
@@ -57,11 +47,6 @@ function formatDetail(detail: string | null): string {
 function actorLabel(row: AuditLog): string {
   const id = row.actor_id === null ? '-' : `#${row.actor_id}`
   return `${row.actor_type} ${id}`
-}
-
-function toUtcIso(value: Date | null | undefined): string | undefined {
-  // 后端统一按 UTC 比较，这里直接输出 UTC ISO 串，时区换算交浏览器完成
-  return value ? value.toISOString() : undefined
 }
 
 async function loadLogs() {
@@ -118,18 +103,21 @@ function openDetail(row: AuditLog) {
   detailVisible.value = true
 }
 
+// 筛选条件变化即自动查询：文本类输入防抖 400ms，时间范围选定后立即触发
+watchDebounced([action, actorId], onSearch, { debounce: 400 })
+watch(timeRange, onSearch)
+
 onMounted(loadLogs)
 </script>
 
 <template>
-  <div class="page">
-    <el-card class="card">
+  <div class="admin-page">
+    <el-card class="admin-card" shadow="never">
       <template #header>
-        <div class="card-header">
-          <span>审计日志</span>
-          <div>
+        <div class="admin-toolbar">
+          <span class="admin-toolbar__title">审计日志</span>
+          <div class="admin-toolbar__actions">
             <el-button @click="loadLogs">刷新</el-button>
-            <el-button @click="router.push('/')">返回首页</el-button>
           </div>
         </div>
       </template>
@@ -182,7 +170,7 @@ onMounted(loadLogs)
         <el-table-column label="操作对象" min-width="170">
           <template #default="{ row }">
             <span>{{ row.target_type }}</span>
-            <span class="muted"> · {{ row.target_id ?? '-' }}</span>
+            <span class="admin-muted"> · {{ row.target_id ?? '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="ip" label="来源 IP" width="140">
@@ -196,7 +184,7 @@ onMounted(loadLogs)
         <template #empty>暂无审计日志</template>
       </el-table>
 
-      <div class="pager">
+      <div class="admin-pager">
         <el-pagination
           background
           layout="total, sizes, prev, pager, next"
@@ -228,31 +216,10 @@ onMounted(loadLogs)
 </template>
 
 <style scoped>
-.page {
-  min-height: 100vh;
-  padding: 24px;
-  box-sizing: border-box;
-  background: #f5f7fa;
-}
-
-.card {
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-weight: 600;
-}
+/* 页面容器、工具栏与分页样式统一走 src/styles/admin.css */
 
 .filters {
   margin-bottom: 8px;
-}
-
-.muted {
-  color: #909399;
 }
 
 .detail-title {
@@ -264,18 +231,12 @@ onMounted(loadLogs)
 .detail-body {
   margin: 0;
   padding: 12px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
   border-radius: 6px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
-}
-
-.pager {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
 }
 </style>

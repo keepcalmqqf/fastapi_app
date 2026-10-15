@@ -1,5 +1,3 @@
-import { defineStore } from 'pinia'
-import { ref } from 'vue'
 import { login as apiLogin, logout as apiLogout } from '../api/auth'
 import type { User } from '../api/auth'
 import { getMe } from '../api/user'

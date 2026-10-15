@@ -1,21 +1,13 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { listMembers } from '../api/member'
 import type { Member } from '../api/member'
-
-const router = useRouter()
+import { formatTime } from '../utils/datetime'
 
 const loading = ref(false)
 const members = ref<Member[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-
-function formatTime(value: string | null): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
 
 async function loadMembers() {
   loading.value = true
@@ -43,14 +35,13 @@ onMounted(loadMembers)
 </script>
 
 <template>
-  <div class="page">
-    <el-card class="card">
+  <div class="admin-page">
+    <el-card class="admin-card" shadow="never">
       <template #header>
-        <div class="card-header">
-          <span>会员管理</span>
-          <div>
+        <div class="admin-toolbar">
+          <span class="admin-toolbar__title">会员管理</span>
+          <div class="admin-toolbar__actions">
             <el-button @click="loadMembers">刷新</el-button>
-            <el-button @click="router.push('/')">返回首页</el-button>
           </div>
         </div>
       </template>
@@ -82,7 +73,7 @@ onMounted(loadMembers)
         <template #empty>暂无会员</template>
       </el-table>
 
-      <div class="pager">
+      <div class="admin-pager">
         <el-pagination
           background
           layout="total, sizes, prev, pager, next"
@@ -99,32 +90,9 @@ onMounted(loadMembers)
 </template>
 
 <style scoped>
-.page {
-  min-height: 100vh;
-  padding: 24px;
-  box-sizing: border-box;
-  background: #f5f7fa;
-}
-
-.card {
-  max-width: 1080px;
-  margin: 0 auto;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-weight: 600;
-}
+/* 页面容器、工具栏与分页样式统一走 src/styles/admin.css */
 
 .tip {
   margin-bottom: 16px;
-}
-
-.pager {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
 }
 </style>

@@ -65,11 +65,14 @@ function rawRefresh(): Promise<void> {
     })
 }
 
-// 刷新失败：清空本地登录态并跳登录页（带 redirect 回跳参数，并发只跳一次）
+// 刷新失败：清空本地登录态并跳登录页（带 redirect 回跳参数，并发只跳一次）。
+// 仅当当前确实停在需要登录的页面上才跳转：导航守卫里恢复会话时 currentRoute 仍是初始的 '/',
+// 若不判断就会把 /register 这类免登录页面顶回登录页，并覆盖掉真实目标地址。
 function clearSessionAndRedirect(message: string) {
   const authStore = useAuthStore()
   authStore.user = null
-  if (router && !redirectingToLogin && router.currentRoute.value.name !== 'login') {
+  const current = router?.currentRoute.value
+  if (router && !redirectingToLogin && current?.name !== 'login' && current?.meta?.requiresAuth) {
     redirectingToLogin = true
     ElMessage.error(message)
     router

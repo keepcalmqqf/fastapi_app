@@ -1,7 +1,11 @@
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
+// createApp / createPinia 由 unplugin-auto-import 自动导入
 import ElementPlus from 'element-plus'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import * as ElementPlusIcons from '@element-plus/icons-vue'
 import 'element-plus/dist/index.css'
+// 暗色变量：配合 src/composables/useAppTheme.ts 在 <html> 上挂 dark 类生效
+import 'element-plus/theme-chalk/dark/css-vars.css'
+import './styles/admin.css'
 
 import App from './App.vue'
 import router from './router'
@@ -9,10 +13,15 @@ import { setupRequest } from './api/request'
 
 const app = createApp(App)
 
+// 图标全局注册，菜单配置里可直接用组件名字符串渲染
+for (const [name, component] of Object.entries(ElementPlusIcons)) {
+  app.component(name, component)
+}
+
 setupRequest(router)
 
 app.use(createPinia())
 app.use(router)
-app.use(ElementPlus)
+app.use(ElementPlus, { locale: zhCn })
 
 app.mount('#app')

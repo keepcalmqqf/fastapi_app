@@ -5,7 +5,7 @@
 ## 技术栈
 
 - [FastAPI](https://fastapi.tiangolo.com/) + Pydantic v2 + SQLAlchemy 2.0
-- [Vue 3](https://vuejs.org/) + Vite + TypeScript + Pinia + Vue Router + Element Plus（`frontend/`）
+- [Vue 3](https://vuejs.org/) + Vite + TypeScript + Pinia + Vue Router + Element Plus + [VueUse](https://vueuse.org/)（`frontend/`）
 - MySQL 8（SQLAlchemy 2.0 + asyncmy 异步驱动；Alembic 迁移走 PyMySQL 同步引擎）、Redis（`redis.asyncio`）
 - JWT 认证（PyJWT）+ Argon2 密码哈希（pwdlib）
 - Alembic 数据库迁移
@@ -37,11 +37,14 @@
 │       ├── rate_limit.py    # 限流（slowapi）
 │       ├── metrics.py       # Prometheus 指标（/metrics）
 │       └── cache.py         # Redis 缓存装饰器 @cached
-├── frontend/                # Vue 3 + Vite + TS 前端（登录/注册/主页）
+├── frontend/                # Vue 3 + Vite + TS 前端（自动导入 vue / vue-router / pinia / VueUse）
 │   ├── src/api/             # axios 封装（自动带 token、解包统一响应、401 跳登录）
-│   ├── src/stores/          # Pinia（认证状态，token 持久化）
+│   ├── src/composables/     # 项目 composable：主题 / 页面标题 / 连接状态（免 import）
+│   ├── src/stores/          # Pinia（认证状态；令牌在 HttpOnly Cookie 中，前端不持有）
 │   ├── src/router/          # 路由与登录守卫
-│   └── src/views/           # Login / Register / Home / 用户管理 / 会员管理（只读列表）页面
+│   ├── src/layouts/         # 后台布局（侧边栏、顶栏、暗色切换与离线指示）
+│   ├── src/views/           # Login / Register / 概览 / 用户管理 / 会员管理 / 审计日志
+│   └── src/auto-imports.d.ts  # 自动导入类型清单（需入库，供 vue-tsc 使用）
 ├── alembic/                 # 数据库迁移
 └── tests/                   # pytest 测试（SQLite 内存库）
 ```

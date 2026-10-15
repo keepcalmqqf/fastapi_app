@@ -9,7 +9,7 @@
 ### 技术栈
 
 - **框架**：FastAPI ≥ 0.115（`fastapi[standard]`，含 `fastapi` CLI）、Pydantic v2、pydantic-settings
-- **前端**：Vue 3 + Vite + TypeScript + Pinia + Vue Router + Element Plus + Axios（`frontend/`，npm 管理）
+- **前端**：Vue 3 + Vite + TypeScript + Pinia + Vue Router + Element Plus + VueUse + Axios（`frontend/`，npm 管理）
 - **数据库**：MySQL 8（SQLAlchemy 2.0 + asyncmy，AsyncSession 全异步链路）、Alembic 迁移（仍走 PyMySQL 同步引擎，见 `alembic/env.py`）
 - **缓存**：Redis（`redis.asyncio`）
 - **认证**：PyJWT（HS256）+ pwdlib Argon2 密码哈希
@@ -149,6 +149,17 @@ cd frontend && npm run build          # 前端构建，产出 frontend/dist（�
 - ORM 使用 SQLAlchemy 2.0 风格（`Mapped[...]` + `mapped_column`）。
 - 提交前检查：`uv run ruff check .` 和 `uv run ruff format .`；可选 `pre-commit install` 自动执行。
 - 注释和文档字符串使用中文。
+
+## 前端约定
+
+- **自动导入**：`vite.config.ts` 用 `unplugin-auto-import` 自动导入 `vue` / `vue-router` / `pinia` / `@vueuse/core` 的 API，以及 `src/composables/` 下的项目自定义 composable。组件里直接用 `ref` / `computed` / `useStorage` / `useAppTheme` 等即可，**不要**再写这些来源的 import；Element Plus、api、stores、utils 仍需显式 import。
+- **类型声明入库**：自动导入清单生成到 `src/auto-imports.d.ts`，该文件必须提交——`build` 先跑 `vue-tsc` 再跑 `vite build`，文件缺失会导致类型检查失败。新增 composable 或改动自动导入范围后，重新构建即可刷新它。
+- **VueUse 用法约定**：
+  - 本地持久化一律用 `useStorage`，键名统一以 `admin.` 前缀（如 `admin.sidebar.collapsed`、`admin.color-scheme`）。
+  - 轮询用 `useIntervalFn`，并配合 `useConnectionStatus`（`useOnline` + `useWindowFocus`）在离线或窗口失焦时 `pause()`，回到前台再 `resume()`。
+  - 筛选类输入用 `watchDebounced` 防抖后自动查询，不要手写 `setTimeout` 防抖。
+  - 暗色模式统一走 `useAppTheme`（内部 `useDark` + `useToggle`），在 `<html>` 上挂 `dark` 类；Element Plus 组件配色由 `theme-chalk/dark/css-vars.css` 自动切换，**自定义类里的颜色必须写成 Element Plus 的 CSS 变量**（`var(--el-bg-color)`、`var(--el-border-color-lighter)` 等），写死十六进制在暗色下不会跟随。
+  - 页面标题由根组件 `App.vue` 调用 `useDocumentTitle` 统一维护，不要在路由守卫里直接改 `document.title`。
 
 ## 测试
 

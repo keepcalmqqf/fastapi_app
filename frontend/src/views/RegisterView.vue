@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { register as apiRegister } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
@@ -97,7 +95,7 @@ async function onSubmit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f5f7fa;
+  background: var(--el-bg-color-page);
 }
 
 .register-card {

@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { listUsers, updateUser, deleteUser } from '../api/user'
 import type { AdminUser } from '../api/user'
 import { useAuthStore } from '../stores/auth'
+import { formatTime } from '../utils/datetime'
 
-const router = useRouter()
 const authStore = useAuthStore()
 
 const loading = ref(false)
@@ -15,11 +13,6 @@ const users = ref<AdminUser[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
-
-function formatTime(value: string | null): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
 
 async function loadUsers() {
   loading.value = true
@@ -104,14 +97,13 @@ onMounted(loadUsers)
 </script>
 
 <template>
-  <div class="page">
-    <el-card class="card">
+  <div class="admin-page">
+    <el-card class="admin-card" shadow="never">
       <template #header>
-        <div class="card-header">
-          <span>用户管理</span>
-          <div>
+        <div class="admin-toolbar">
+          <span class="admin-toolbar__title">用户管理</span>
+          <div class="admin-toolbar__actions">
             <el-button @click="loadUsers">刷新</el-button>
-            <el-button @click="router.push('/')">返回首页</el-button>
           </div>
         </div>
       </template>
@@ -147,7 +139,7 @@ onMounted(loadUsers)
         <template #empty>暂无用户</template>
       </el-table>
 
-      <div class="pager">
+      <div class="admin-pager">
         <el-pagination
           background
           layout="total, sizes, prev, pager, next"
@@ -184,28 +176,5 @@ onMounted(loadUsers)
 </template>
 
 <style scoped>
-.page {
-  min-height: 100vh;
-  padding: 24px;
-  box-sizing: border-box;
-  background: #f5f7fa;
-}
-
-.card {
-  max-width: 1080px;
-  margin: 0 auto;
-}
-
-.card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-weight: 600;
-}
-
-.pager {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 16px;
-}
+/* 页面容器、工具栏与分页样式统一走 src/styles/admin.css */
 </style>

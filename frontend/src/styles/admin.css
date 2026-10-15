@@ -1,0 +1,84 @@
+/* 后台全局基础样式：重置 + 统一的页面容器/卡片/工具栏/分页布局。
+ * 颜色一律取 Element Plus 的 CSS 变量，这样 <html> 挂上 dark 类后布局会跟着变暗。 */
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family:
+    'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', Arial,
+    sans-serif;
+  color: var(--el-text-color-primary);
+  background: var(--el-bg-color-page);
+}
+
+/* 内容区统一页面容器：撑满布局高度，内部滚动 */
+.admin-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 16px 20px 20px;
+  overflow: auto;
+}
+
+/* 页面主卡片 */
+.admin-card {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 卡片头部工具栏：左侧标题，右侧操作区 */
+.admin-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-toolbar__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.admin-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 分页器统一右对齐 */
+.admin-pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* 辅助文字 */
+.admin-muted {
+  color: var(--el-text-color-secondary);
+}
+
+/* 路由切换过渡：淡入 + 轻微上移 */
+.fade-slide-enter-active,
+.fade-slide-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
+}
