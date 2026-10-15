@@ -14,7 +14,9 @@ logger = logging.getLogger("fastapi_app")
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
-    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    async def validation_exception_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
         errors = [{"loc": list(e.get("loc", [])), "msg": e.get("msg", "")} for e in exc.errors()]
         return JSONResponse(
             status_code=422,
@@ -24,14 +26,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         content = result.failure(code=exc.status_code, message=str(exc.detail)).model_dump()
         if exc.headers:
             return JSONResponse(status_code=exc.status_code, content=content, headers=exc.headers)
         return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RedisError)
-    async def redis_exception_handler(request: Request, exc: RedisError):
+    async def redis_exception_handler(request: Request, exc: RedisError) -> JSONResponse:
         logger.exception("Redis 操作失败: %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,
@@ -39,7 +41,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(SQLAlchemyError)
-    async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
+    async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
         logger.exception("数据库操作失败: %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,
@@ -47,7 +49,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(Exception)
-    async def unknown_exception_handler(request: Request, exc: Exception):
+    async def unknown_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("未处理异常: %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,

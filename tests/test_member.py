@@ -41,7 +41,7 @@ def _member_login(client) -> dict:
 
 def _create_admin_token(client) -> str:
     """空库自举创建首个管理员并登录，返回 admin token。"""
-    resp = client.post("/user/create_user", json=ADMIN_PAYLOAD)
+    resp = client.post("/user/", json=ADMIN_PAYLOAD)
     assert resp.status_code == 200, f"创建首个管理员失败: {resp.text}"
     resp = client.post(
         "/auth/login",
@@ -298,7 +298,7 @@ def test_member_logout_revokes_tokens(client):
 
 
 def test_member_list_pagination(client):
-    """/member/list 需 admin 令牌，返回 Page 结构；page_size>100 返回 422。"""
+    """/member/ 需 admin 令牌，返回 Page 结构；page_size>100 返回 422。"""
     for i in range(3):
         resp = client.post(
             "/member/register",
@@ -311,7 +311,7 @@ def test_member_list_pagination(client):
         assert resp.status_code == 200, resp.text
 
     admin_token = _create_admin_token(client)
-    resp = client.get("/member/list", headers={"Authorization": f"Bearer {admin_token}"})
+    resp = client.get("/member/", headers={"Authorization": f"Bearer {admin_token}"})
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["total"] == 3
@@ -319,7 +319,7 @@ def test_member_list_pagination(client):
     assert len(data["items"]) == 3
 
     resp = client.get(
-        "/member/list",
+        "/member/",
         params={"page_size": 101},
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -327,7 +327,64 @@ def test_member_list_pagination(client):
 
 
 def test_member_list_requires_admin_token(client):
-    """会员令牌访问 /member/list 返回 401（aud 不匹配）。"""
+    """会员令牌访问 /member/ 返回 401（aud 不匹配）。"""
     member_token = _register_and_login(client)
-    resp = client.get("/member/list", headers={"Authorization": f"Bearer {member_token}"})
+    resp = client.get("/member/", headers={"Authorization": f"Bearer {member_token}"})
     assert resp.status_code == 401
+
+
+# ---------- 修改密码 ----------
+
+_NEW_PASSWORD = "newpass123"
+
+
+def _change_password(client, token: str, old_password: str, new_password: str):
+    return client.post(
+        "/member/change-password",
+        json={"old_password": old_password, "new_password": new_password},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def test_member_change_password_success(client):
+    """会员改密：旧密码失效、新密码可登录。"""
+    token = _register_and_login(client)
+    resp = _change_password(client, token, MEMBER_PAYLOAD["password"], _NEW_PASSWORD)
+    assert resp.status_code == 200
+
+    old_login = client.post(
+        "/member/login",
+        json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
+    )
+    assert old_login.status_code == 401
+    new_login = client.post(
+        "/member/login", json={"email": MEMBER_PAYLOAD["email"], "password": _NEW_PASSWORD}
+    )
+    assert new_login.status_code == 200
+
+
+def test_member_change_password_wrong_old_password(client):
+    """原密码错误返回 401，密码未被改动。"""
+    token = _register_and_login(client)
+    resp = _change_password(client, token, "wrong-password", _NEW_PASSWORD)
+    assert resp.status_code == 401
+
+    assert (
+        client.post(
+            "/member/login",
+            json={"email": MEMBER_PAYLOAD["email"], "password": MEMBER_PAYLOAD["password"]},
+        ).status_code
+        == 200
+    )
+
+
+def test_member_change_password_revokes_sessions(client):
+    """改密终止该会员全部会话：改动前签发的令牌立即失效。"""
+    token = _register_and_login(client)
+    assert client.get("/member/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+    assert (
+        _change_password(client, token, MEMBER_PAYLOAD["password"], _NEW_PASSWORD).status_code
+        == 200
+    )
+    assert client.get("/member/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401

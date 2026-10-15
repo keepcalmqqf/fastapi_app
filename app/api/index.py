@@ -13,5 +13,5 @@ class AppInfoOut(BaseModel):
 
 
 @router.get("/api/info", response_model=Result[AppInfoOut])
-async def index():
+async def index() -> Result[AppInfoOut]:
     return result.ok(data=AppInfoOut(service="fastapi_app", docs="/docs"))

@@ -51,6 +51,25 @@ def create_refresh_token(subject: str, aud: str) -> str:
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
+def create_email_verify_token(subject: str, aud: str) -> str:
+    """签发邮箱验证令牌：type="email_verify"，与访问/刷新令牌互不通用。
+
+    令牌自包含（不落 Redis），有效期由 EMAIL_VERIFY_TOKEN_EXPIRE_HOURS 控制；
+    验证成功后服务端会置 email_verified 标记，令牌重用虽有窗口但无额外危害。
+    """
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(hours=settings.EMAIL_VERIFY_TOKEN_EXPIRE_HOURS)
+    payload = {
+        "sub": subject,
+        "aud": aud,
+        "exp": expire,
+        "iat": now,
+        "jti": uuid4().hex,
+        "type": "email_verify",
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
 def decode_access_token(token: str) -> dict | None:
     """返回 token 负载（含 sub/aud），无效或过期返回 None。
 

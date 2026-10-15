@@ -50,6 +50,21 @@ async def authenticate(db: AsyncSession, email: str, password: str) -> User | No
     return user
 
 
+async def change_password(
+    db: AsyncSession, user: User, old_password: str, new_password: str
+) -> bool:
+    """修改密码：原密码校验失败返回 False，成功后落库返回 True。事务边界在本层。
+
+    调用方（api 层）负责在成功后撤销该主体的全部令牌——改密意味着凭证已变更，
+    其他设备上用旧密码登录的会话不应继续存活。
+    """
+    if not user.password or not security.verify_password(old_password, user.password):
+        return False
+    await user_repo.update_user(db, user, {"password": security.hash_password(new_password)})
+    await db.commit()
+    return True
+
+
 async def list_users(db: AsyncSession, page: int, page_size: int) -> tuple[list[User], int]:
     return await user_repo.list_users(db, page, page_size)
 

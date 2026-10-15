@@ -10,7 +10,7 @@ router = APIRouter(tags=["系统"])
 
 
 @router.get("/health", summary="健康检查（数据库 + Redis）", response_model=Result[dict])
-async def health(request: Request):
+async def health(request: Request) -> JSONResponse:
     components: dict[str, str] = {}
 
     try:

@@ -53,12 +53,22 @@ class RefreshTokenIn(BaseModel):
     refresh_token: str | None = None
 
 
+class ChangeMemberPassword(BaseModel):
+    """会员修改密码入参：必须校验原密码，新密码沿用注册的强度规则。"""
+
+    old_password: str = Field(max_length=64)
+    new_password: str = Field(min_length=8, max_length=64)
+
+    _check_password = field_validator("new_password")(_validate_password_strength)
+
+
 class MemberOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    nickname: str | None
-    email: str | None
+    nickname: str
+    email: str
     is_active: bool
+    email_verified: bool
     created_at: datetime
     updated_at: datetime

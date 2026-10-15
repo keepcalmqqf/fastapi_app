@@ -9,6 +9,8 @@
 
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from starlette.staticfiles import StaticFiles
 
 from app.core.settings import settings
@@ -113,3 +115,31 @@ def test_rate_limit_fails_open_on_storage_error(monkeypatch):
         monkeypatch.setattr(app.state.limiter, "_check_request_limit", boom)
         for _ in range(3):
             assert client.get("/ping").status_code == 200
+
+
+def test_header_injection_failure_does_not_break_response(monkeypatch):
+    """注入限流响应头失败时，已完成的请求仍正常返回（响应头只是增强信息）。"""
+    monkeypatch.setattr(settings, "RATE_LIMIT", "100/minute")
+    app = _decorated_app()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("注入失败（测试模拟）")
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.limiter, "_inject_headers", boom)
+        resp = client.get("/ping")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+
+def test_incompatible_limiter_disables_rate_limiting():
+    """依赖的 slowapi 私有入口缺失时，限流显式关闭而不是静默失效。"""
+
+    class _Stub:
+        pass
+
+    missing = rate_limit_plugin._missing_internals(_Stub())
+    assert missing == list(rate_limit_plugin._REQUIRED_INTERNALS)
+
+    # 当前 slowapi 版本应完全兼容
+    assert rate_limit_plugin._missing_internals(Limiter(key_func=get_remote_address)) == []

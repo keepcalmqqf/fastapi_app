@@ -37,6 +37,20 @@ async def authenticate(db: AsyncSession, email: str, password: str) -> Member | 
     return member
 
 
+async def change_password(
+    db: AsyncSession, member: Member, old_password: str, new_password: str
+) -> bool:
+    """修改密码：原密码校验失败返回 False，成功后落库返回 True。事务边界在本层。
+
+    调用方（api 层）负责在成功后撤销该主体的全部令牌。
+    """
+    if not member.password or not security.verify_password(old_password, member.password):
+        return False
+    await member_repo.update_member(db, member, {"password": security.hash_password(new_password)})
+    await db.commit()
+    return True
+
+
 async def list_members(db: AsyncSession, page: int, page_size: int) -> tuple[list[Member], int]:
     return await member_repo.list_members(db, page, page_size)
 

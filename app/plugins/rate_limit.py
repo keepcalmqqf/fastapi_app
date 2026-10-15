@@ -1,5 +1,5 @@
 import logging
-from collections.abc import MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -17,6 +17,17 @@ from app.core.settings import settings
 logger = logging.getLogger("fastapi_app")
 
 _RATE_LIMITED_BODY = result.failure(code=429, message="请求过于频繁，请稍后重试").model_dump()
+
+# 本插件绕开 slowapi 自带中间件，直接调用这两个未公开入口（原因见 _DefaultLimitMiddleware
+# 的 docstring）。它们在慢速迭代的上游库里随时可能被改名或移除；一旦缺失，限流会退化成
+# 「每个请求都命中 except 分支后放行」——与自带中间件曾踩过的静默失效属同一类故障，
+# 且更难察觉。因此启动时显式探测，缺失就关闭限流并打 error 日志。
+_REQUIRED_INTERNALS = ("_check_request_limit", "_inject_headers")
+
+
+def _missing_internals(limiter: Any) -> list[str]:
+    """返回 Limiter 上缺失的私有入口名称；为空表示兼容。"""
+    return [name for name in _REQUIRED_INTERNALS if not hasattr(limiter, name)]
 
 
 def _matches_api_route(app: FastAPI, scope: MutableMapping[str, Any]) -> bool:
@@ -51,7 +62,9 @@ class _DefaultLimitMiddleware(BaseHTTPMiddleware):
     默认限额照常生效。改动前请先跑 tests/test_rate_limit.py。
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         limiter: Limiter = request.app.state.limiter
         if not limiter.enabled or not _matches_api_route(request.app, request.scope):
             return await call_next(request)
@@ -68,16 +81,29 @@ class _DefaultLimitMiddleware(BaseHTTPMiddleware):
         # 限流头（X-RateLimit-*）：limit_for_header 由 __evaluate_limits 写入 state，
         # 未参与限流的请求取不到，_inject_headers 对 None 本身是安全的。
         current_limit: Any = getattr(request.state, "view_rate_limit", None)
-        return limiter._inject_headers(response, current_limit)
+        try:
+            return limiter._inject_headers(response, current_limit)
+        except Exception:
+            # 响应头是增强信息，注入失败不该让已经完成的请求变成 500
+            logger.warning("限流响应头注入失败，忽略", exc_info=True)
+            return response
 
 
 def setup(app: FastAPI) -> None:
     limiter = Limiter(key_func=get_remote_address, default_limits=[settings.RATE_LIMIT])
+    missing = _missing_internals(limiter)
+    if missing:
+        # 依赖的私有入口不存在：显式关闭限流并告警，而不是让它悄悄变成空操作
+        limiter.enabled = False
+        logger.error(
+            "slowapi 版本不兼容（缺少 %s），限流已关闭；请检查 slowapi 版本或改回自带中间件",
+            ", ".join(missing),
+        )
     app.state.limiter = limiter
     app.add_middleware(_DefaultLimitMiddleware)
 
     # 处理器保持同步（不要改成 async def）：供 @limiter.limit() 装饰器路径使用，
     # 而 slowapi 在同步上下文里无法 await 协程处理器。中间件路径已在上面直接返回 429。
     @app.exception_handler(RateLimitExceeded)
-    def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
         return JSONResponse(status_code=429, content=_RATE_LIMITED_BODY)

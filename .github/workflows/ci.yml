@@ -5,9 +5,45 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # 迁移与 MySQL 集成测试共用的连接信息（与 services.mysql 保持一致）
+  MYSQL_HOST: 127.0.0.1
+  MYSQL_PORT: 3306
+  MYSQL_USER: ci
+  MYSQL_PASSWORD: ci-pass
+  MYSQL_DATABASE: fastapi_test
+  REDIS_HOST: 127.0.0.1
+  SECRET_KEY: ci-only-secret-key-long-enough-for-hs256
+  # 置空即回落到 SQLite 内存库（默认）；MySQL 步骤会覆盖为真实连接串
+  TEST_DATABASE_URL: ""
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: 123456
+          MYSQL_DATABASE: fastapi_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+          --health-start-period=30s
+          --mysql-native-password=ON
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +56,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      - name: Prepare MySQL account
+        # 用 mysql_native_password 建专用账号：Alembic 走 PyMySQL 同步驱动，
+        # 默认的 caching_sha2_password 握手需要额外的 cryptography 依赖
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -uroot -p123456 -e "
+            CREATE USER IF NOT EXISTS 'ci'@'%' IDENTIFIED WITH mysql_native_password BY 'ci-pass';
+            GRANT ALL PRIVILEGES ON *.* TO 'ci'@'%';
+            FLUSH PRIVILEGES;"
+
       - name: Ruff
         run: |
           uv run ruff check .
@@ -28,8 +73,22 @@ jobs:
       - name: Mypy
         run: uv run mypy app tests
 
-      - name: Pytest
+      - name: Apply migrations
+        # 验证迁移链在真实 MySQL 上可执行（SQLite 覆盖不到方言差异）
+        run: uv run alembic upgrade head
+
+      - name: Check migration drift
+        # 模型与迁移必须一致：漏生成迁移在这里就失败，而不是等到线上 500
+        run: uv run alembic check
+
+      - name: Pytest (SQLite)
         run: uv run pytest --cov=app --cov-fail-under=82
+
+      - name: Pytest (MySQL)
+        # 同一套用例跑在真实 MySQL 上，覆盖 SQLite 测不到的方言行为
+        env:
+          TEST_DATABASE_URL: mysql+asyncmy://ci:ci-pass@127.0.0.1:3306/fastapi_test
+        run: uv run pytest
 
       - name: Set up Node
         uses: actions/setup-node@v4

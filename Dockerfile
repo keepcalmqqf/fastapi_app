@@ -35,5 +35,7 @@ EXPOSE 8000
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
-# 执行命令
-CMD ["fastapi", "run", "app/main.py"]
+# 启动前先执行数据库迁移：漏跑迁移会让所有依赖表结构的接口直接 500，
+# 这里让它成为启动的必经步骤（迁移失败即容器退出，不会带病对外提供服务）。
+# exec 保证 uvicorn 接管 PID 1，信号能正常传递；worker 数按容器 CPU 用 WEB_CONCURRENCY 调整。
+CMD ["sh", "-c", "alembic upgrade head && exec fastapi run app/main.py --workers ${WEB_CONCURRENCY:-2}"]

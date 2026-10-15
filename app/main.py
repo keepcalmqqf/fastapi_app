@@ -1,4 +1,5 @@
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     redis = create_redis()
     app.state.redis = redis
     set_redis(redis)
@@ -39,7 +40,8 @@ app = FastAPI(
 
 register_exception_handlers(app)
 cors_middleware(app)
-app.add_middleware(GZipMiddleware)
+# 只压缩超过 1KB 的响应：小响应压缩收益低却同样带来 CPU 开销与 BREACH 面
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 setup_plugins(app)
 register_routers(app)
 

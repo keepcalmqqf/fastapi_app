@@ -1,5 +1,6 @@
 import asyncio
 import fnmatch
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import TypeVar
 
@@ -13,11 +14,19 @@ from app.core.database import get_db
 from app.main import app
 from app.models import Base
 
-async_engine = create_async_engine(
-    "sqlite+aiosqlite://",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+# 默认用 SQLite 内存库：本地跑测试零外部依赖。
+# 设置 TEST_DATABASE_URL（如 mysql+asyncmy://...）可让同一套用例跑在真实数据库上，
+# 覆盖 SQLite 测不到的方言差异（类型强制、长度校验、唯一索引行为、并发）。CI 会用后者。
+_TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
+
+if _TEST_DATABASE_URL:
+    async_engine = create_async_engine(_TEST_DATABASE_URL, pool_pre_ping=True)
+else:
+    async_engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 TestingSessionLocal = async_sessionmaker(
     autocommit=False, autoflush=False, expire_on_commit=False, bind=async_engine
 )

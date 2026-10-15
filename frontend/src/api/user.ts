@@ -13,8 +13,8 @@ export interface Page<T> {
 // 管理端用户条目，对应后端 UserOut（比登录态 User 多时间字段）
 export interface AdminUser {
   id: number
-  name: string | null
-  email: string | null
+  name: string
+  email: string
   is_active: boolean
   created_at: string
   updated_at: string
@@ -27,7 +27,7 @@ export function getMe() {
 
 // 分页获取用户列表（需管理员令牌）
 export function listUsers(page: number, pageSize: number) {
-  return request.get<never, ApiResult<Page<AdminUser>>>('/user/list', {
+  return request.get<never, ApiResult<Page<AdminUser>>>('/user/', {
     params: { page, page_size: pageSize },
   })
 }

@@ -3,7 +3,7 @@ from typing import Any
 import jwt
 
 from app.core.security import create_access_token
-from app.core.settings import settings
+from app.core.settings import Settings, settings
 from tests.conftest import run_db
 
 USER_PAYLOAD: dict[str, Any] = {
@@ -23,14 +23,14 @@ def _login(client, email: str, password: str) -> str:
 def _create_first_admin(client, payload: dict | None = None) -> str:
     """空库自举创建首个管理员并登录，返回 admin token。"""
     payload = payload or USER_PAYLOAD
-    resp = client.post("/user/create_user", json=payload)
+    resp = client.post("/user/", json=payload)
     assert resp.status_code == 200, f"创建首个管理员失败: {resp.text}"
     return _login(client, payload["email"], payload["password"])
 
 
 def test_create_user_bootstrap_without_token(client):
     """空库自举：users 表为空时无 token 可创建首个管理员。"""
-    resp = client.post("/user/create_user", json=USER_PAYLOAD)
+    resp = client.post("/user/", json=USER_PAYLOAD)
     assert resp.status_code == 200
     body = resp.json()
     assert body["code"] == 200
@@ -42,9 +42,9 @@ def test_create_user_bootstrap_without_token(client):
 
 def test_create_user_requires_token_when_table_not_empty(client):
     """表非空时无 token 创建用户返回 401。"""
-    client.post("/user/create_user", json=USER_PAYLOAD)
+    client.post("/user/", json=USER_PAYLOAD)
     resp = client.post(
-        "/user/create_user",
+        "/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com"},
     )
     assert resp.status_code == 401
@@ -53,7 +53,7 @@ def test_create_user_requires_token_when_table_not_empty(client):
 def test_create_user_with_admin_token(client):
     token = _create_first_admin(client)
     resp = client.post(
-        "/user/create_user",
+        "/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -64,7 +64,7 @@ def test_create_user_with_admin_token(client):
 def test_create_user_duplicate_email(client):
     token = _create_first_admin(client)
     resp = client.post(
-        "/user/create_user",
+        "/user/",
         json=USER_PAYLOAD,
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -73,7 +73,7 @@ def test_create_user_duplicate_email(client):
 
 
 def test_create_user_validation_error(client):
-    resp = client.post("/user/create_user", json={**USER_PAYLOAD, "name": "张"})
+    resp = client.post("/user/", json={**USER_PAYLOAD, "name": "张"})
     assert resp.status_code == 422
     body = resp.json()
     assert body["code"] == 422
@@ -84,7 +84,7 @@ def test_create_user_validation_error(client):
 
 def test_create_user_weak_password(client):
     """纯数字密码不满足「字母+数字」策略，返回 422。"""
-    resp = client.post("/user/create_user", json={**USER_PAYLOAD, "password": "12345678"})
+    resp = client.post("/user/", json={**USER_PAYLOAD, "password": "12345678"})
     assert resp.status_code == 422
     errors = resp.json()["data"]["errors"]
     assert any("password" in e["loc"] for e in errors)
@@ -92,7 +92,7 @@ def test_create_user_weak_password(client):
 
 def test_create_user_short_password(client):
     """少于 8 位密码返回 422。"""
-    resp = client.post("/user/create_user", json={**USER_PAYLOAD, "password": "abc123"})
+    resp = client.post("/user/", json={**USER_PAYLOAD, "password": "abc123"})
     assert resp.status_code == 422
     errors = resp.json()["data"]["errors"]
     assert any("password" in e["loc"] for e in errors)
@@ -100,7 +100,7 @@ def test_create_user_short_password(client):
 
 def test_create_user_blank_name(client):
     """纯空白 name 返回 422。"""
-    resp = client.post("/user/create_user", json={**USER_PAYLOAD, "name": "   "})
+    resp = client.post("/user/", json={**USER_PAYLOAD, "name": "   "})
     assert resp.status_code == 422
     errors = resp.json()["data"]["errors"]
     assert any("name" in e["loc"] for e in errors)
@@ -109,7 +109,7 @@ def test_create_user_blank_name(client):
 def test_email_normalized(client):
     """大写/带空白邮箱注册后归一化为小写，用小写登录成功。"""
     payload = {**USER_PAYLOAD, "email": "  ZHANGSAN@Test.COM  "}
-    resp = client.post("/user/create_user", json=payload)
+    resp = client.post("/user/", json=payload)
     assert resp.status_code == 200
     assert resp.json()["data"]["email"] == "zhangsan@test.com"
 
@@ -122,32 +122,87 @@ def test_email_normalized(client):
 def test_get_user(client):
     token = _create_first_admin(client)
     created_resp = client.post(
-        "/user/create_user",
+        "/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers={"Authorization": f"Bearer {token}"},
     )
     assert created_resp.status_code == 200, created_resp.text
     created = created_resp.json()["data"]
     resp = client.get(
-        "/user/get_user",
-        params={"user_id": created["id"]},
+        f"/user/{created['id']}",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["id"] == created["id"]
 
 
+# ---------- REST 风格路由（/user/、/user/{user_id}） ----------
+
+
+def test_rest_routes_for_user_crud(client):
+    """REST 风格路径可用：POST /user/ 创建、GET /user/ 列表、GET /user/{id} 查询。"""
+    token = _create_first_admin(client)
+    auth = {"Authorization": f"Bearer {token}"}
+
+    created = client.post(
+        "/user/",
+        json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
+        headers=auth,
+    )
+    assert created.status_code == 200, created.text
+    user_id = created.json()["data"]["id"]
+
+    listed = client.get("/user/", headers=auth)
+    assert listed.status_code == 200
+    assert listed.json()["data"]["total"] == 2
+
+    fetched = client.get(f"/user/{user_id}", headers=auth)
+    assert fetched.status_code == 200
+    assert fetched.json()["data"]["id"] == user_id
+
+
+def test_legacy_paths_removed(client):
+    """旧 RPC 路径已彻底移除，不再返回 200。
+
+    它们现在都落到 /user/{user_id} 上：方法不对的返回 405，
+    方法对但路径段无法转 int 的返回 422。
+    """
+    token = _create_first_admin(client)
+    auth = {"Authorization": f"Bearer {token}"}
+
+    legacy_create = "/user/" + "create_user"
+    legacy_list = "/user/" + "list"
+    legacy_get = "/user/" + "get_user"
+    assert client.post(legacy_create, json=USER_PAYLOAD, headers=auth).status_code == 405
+    assert client.get(legacy_list, headers=auth).status_code == 422
+    assert client.get(legacy_get, params={"user_id": 1}, headers=auth).status_code == 422
+
+
+def test_rest_get_user_invalid_id_returns_422(client):
+    """/user/{user_id} 的 user_id 非数字时返回统一格式的 422。"""
+    token = _create_first_admin(client)
+    resp = client.get("/user/not-a-number", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 422
+    assert resp.json()["code"] == 422
+
+
+def test_rest_route_requires_token_when_table_not_empty(client):
+    """新路径沿用旧路径的鉴权语义：表非空时创建用户需要令牌。"""
+    client.post("/user/", json=USER_PAYLOAD)
+    resp = client.post("/user/", json={**USER_PAYLOAD, "email": "lisi@test.com"})
+    assert resp.status_code == 401
+
+
 def test_get_user_without_token(client):
-    client.post("/user/create_user", json=USER_PAYLOAD)
-    resp = client.get("/user/get_user", params={"user_id": 1})
+    client.post("/user/", json=USER_PAYLOAD)
+    resp = client.get("/user/1")
     assert resp.status_code == 401
 
 
 def test_get_user_not_found(client):
     token = _create_first_admin(client)
     resp = client.get(
-        "/user/get_user",
-        params={"user_id": 99999},
+        "/user/99999",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 404
@@ -159,7 +214,7 @@ def test_password_is_hashed(client):
 
     from app.models import User
 
-    client.post("/user/create_user", json=USER_PAYLOAD)
+    client.post("/user/", json=USER_PAYLOAD)
     user = run_db(lambda db: db.scalar(select(User).where(User.email == USER_PAYLOAD["email"])))
     assert user is not None
     assert user.password != USER_PAYLOAD["password"]
@@ -174,7 +229,7 @@ def test_login_and_me(client):
 
 
 def test_login_wrong_password(client):
-    client.post("/user/create_user", json=USER_PAYLOAD)
+    client.post("/user/", json=USER_PAYLOAD)
     resp = client.post(
         "/auth/login",
         json={"email": USER_PAYLOAD["email"], "password": "wrong-password"},
@@ -184,7 +239,7 @@ def test_login_wrong_password(client):
 
 def test_login_disabled_user(client):
     """禁用账号（is_active=False）登录返回 401。"""
-    client.post("/user/create_user", json={**USER_PAYLOAD, "is_active": False})
+    client.post("/user/", json={**USER_PAYLOAD, "is_active": False})
     resp = client.post(
         "/auth/login",
         json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]},
@@ -222,7 +277,7 @@ def test_forged_token_rejected(client):
 def _create_users(client, token: str, count: int) -> None:
     for i in range(count):
         resp = client.post(
-            "/user/create_user",
+            "/user/",
             json={
                 "name": f"用户{i}",
                 "email": f"user{i}@test.com",
@@ -235,11 +290,11 @@ def _create_users(client, token: str, count: int) -> None:
 
 
 def test_list_users_pagination(client):
-    """/user/list 返回 Page 结构：total/items/page/page_size 正确，分页生效。"""
+    """/user/ 返回 Page 结构：total/items/page/page_size 正确，分页生效。"""
     token = _create_first_admin(client)
     _create_users(client, token, 3)  # 共 4 个用户
 
-    resp = client.get("/user/list", headers={"Authorization": f"Bearer {token}"})
+    resp = client.get("/user/", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
     data = resp.json()["data"]
     assert data["total"] == 4
@@ -248,7 +303,7 @@ def test_list_users_pagination(client):
     assert len(data["items"]) == 4
 
     resp = client.get(
-        "/user/list",
+        "/user/",
         params={"page": 2, "page_size": 3},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -264,11 +319,18 @@ def test_list_users_page_size_bounds(client):
     """page_size 上限 100，越界 422；page 从 1 开始。"""
     token = _create_first_admin(client)
     resp = client.get(
-        "/user/list", params={"page_size": 101}, headers={"Authorization": f"Bearer {token}"}
+        "/user/", params={"page_size": 101}, headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 422
+    resp = client.get("/user/", params={"page": 0}, headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 422
+
+
+def test_list_users_page_upper_bound(client):
+    """page 同样设上限：无上限时超大页码等价于一次全表扫描。"""
+    token = _create_first_admin(client)
     resp = client.get(
-        "/user/list", params={"page": 0}, headers={"Authorization": f"Bearer {token}"}
+        "/user/", params={"page": 10001}, headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 422
 
@@ -276,7 +338,7 @@ def test_list_users_page_size_bounds(client):
 def test_list_users_requires_admin(client):
     _create_first_admin(client)
     client.cookies.clear()  # 不带任何凭证（Cookie jar 会记住登录种下的 Cookie）
-    resp = client.get("/user/list")
+    resp = client.get("/user/")
     assert resp.status_code == 401
 
 
@@ -285,7 +347,7 @@ def test_list_users_requires_admin(client):
 
 def _create_one_user(client, token: str, email: str = "lisi@test.com") -> dict:
     resp = client.post(
-        "/user/create_user",
+        "/user/",
         json={"name": "李四", "email": email, "password": "abcd1234", "is_active": True},
         headers={"Authorization": f"Bearer {token}"},
     )
@@ -341,8 +403,7 @@ def test_delete_user_soft_blocks_login_and_lookup(client):
     assert login.status_code == 401
 
     resp = client.get(
-        "/user/get_user",
-        params={"user_id": user["id"]},
+        f"/user/{user['id']}",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 404
@@ -361,6 +422,70 @@ def test_delete_self_forbidden(client):
         f"/user/{me.json()['data']['id']}", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 400
+
+
+def test_disable_self_forbidden(client):
+    """不允许把自己停用：把自己置为 is_active=False 会把全员锁在门外且无法自助恢复。"""
+    token = _create_first_admin(client)
+    me = client.get("/user/me", headers={"Authorization": f"Bearer {token}"})
+    me_id = me.json()["data"]["id"]
+    resp = client.patch(
+        f"/user/{me_id}", json={"is_active": False}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 400
+    # 账号仍处于启用状态
+    still = client.get("/user/me", headers={"Authorization": f"Bearer {token}"})
+    assert still.json()["data"]["is_active"] is True
+
+
+def test_disable_self_with_other_fields_still_allowed(client):
+    """反向保障：改自己的昵称不受「禁止自我停用」影响。"""
+    token = _create_first_admin(client)
+    me = client.get("/user/me", headers={"Authorization": f"Bearer {token}"}).json()["data"]
+    resp = client.patch(
+        f"/user/{me['id']}", json={"name": "新名字"}, headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["name"] == "新名字"
+
+
+def test_bootstrap_can_be_disabled(client, monkeypatch):
+    """ALLOW_BOOTSTRAP 关闭后，空库建号同样要求有效令牌（PROD 默认关闭）。"""
+    monkeypatch.setattr(Settings, "bootstrap_allowed", False)
+    resp = client.post("/user/", json=USER_PAYLOAD)
+    assert resp.status_code == 401
+
+
+def test_timestamps_come_from_single_utc_source(client):
+    """审计时间戳与软删时间统一由应用侧生成（naive UTC），不与数据库时区错位。
+
+    数据库侧 func.now() 取服务器时区，MySQL 跑在本地时区时会与 Python UTC 差若干小时，
+    按时间范围过滤软删记录即出错。
+    """
+    from sqlalchemy import select
+
+    from app.models import User
+    from app.models.base import utc_now
+
+    token = _create_first_admin(client)
+    user = _create_one_user(client, token)
+    assert (
+        client.delete(
+            f"/user/{user['id']}", headers={"Authorization": f"Bearer {token}"}
+        ).status_code
+        == 200
+    )
+
+    row = run_db(lambda db: db.scalar(select(User).where(User.id == user["id"])))
+    assert row is not None
+    for ts in (row.created_at, row.updated_at, row.deleted_at):
+        assert ts is not None
+        assert ts.tzinfo is None
+    assert row.deleted_at is not None
+    assert row.deleted_at >= row.created_at
+    # 与当前 UTC 的偏差在分钟级：若时间仍由数据库本地时区生成，这里会差若干小时
+    assert abs((utc_now() - row.deleted_at).total_seconds()) < 300
 
 
 # ---------- 账号级令牌撤销（软删 / 停用 / 重新启用） ----------

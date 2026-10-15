@@ -2,6 +2,7 @@ import contextvars
 import logging
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,7 +22,9 @@ class RequestIdFilter(logging.Filter):
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next) -> Response:
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
         rid = request.headers.get("X-Request-ID")
         if not rid or not _REQUEST_ID_RE.fullmatch(rid):
             rid = uuid.uuid4().hex

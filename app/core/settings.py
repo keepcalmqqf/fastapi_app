@@ -1,3 +1,5 @@
+from urllib.parse import quote_plus
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -8,6 +10,9 @@ _ALLOWED_JWT_ALGORITHMS = ("HS256", "HS384", "HS512")
 
 # HS256 的安全下限：密钥长度不应低于哈希输出长度（32 字节）
 _MIN_SECRET_KEY_BYTES = 32
+
+# 生产模式标识（MODE 归一化后比较）：PROD 触发生产强校验与默认安全策略
+_MODE_PROD = "PROD"
 
 
 class Settings(BaseSettings):
@@ -21,6 +26,13 @@ class Settings(BaseSettings):
     MYSQL_USER: str = "root"
     MYSQL_PASSWORD: str = "123456"
     MYSQL_DATABASE: str = "fastapi_db"
+
+    # 数据库连接池（仅应用运行时生效，Alembic 迁移走 NullPool 不受影响）
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    # 回收连接的时间阈值：需小于 MySQL wait_timeout，避免拿到已被服务端断开的连接
+    DB_POOL_RECYCLE: int = 3600
+    DB_POOL_TIMEOUT: int = 30
 
     # Redis
     REDIS_HOST: str = ""
@@ -42,6 +54,16 @@ class Settings(BaseSettings):
     # API 文档开关（None 时 DEV 开、PROD 关；显式设置则以设置为准）
     ENABLE_DOCS: bool | None = None
 
+    # 邮箱验证：开关关闭时邮箱验证仅作留档，不影响登录
+    REQUIRE_EMAIL_VERIFICATION: bool = False
+    EMAIL_VERIFY_TOKEN_EXPIRE_HOURS: int = 24
+    # 验证链接的基础地址（前端页面地址），邮件里拼成 {base}?token=xxx
+    EMAIL_VERIFY_URL_BASE: str = "http://localhost:5173/verify-email"
+
+    # 空库自举开关（None 时 DEV 开、PROD 关）：关闭后建号一律要求有效后台令牌。
+    # PROD 下开放意味着服务首次启动后任何人都能抢建管理员，故默认关闭。
+    ALLOW_BOOTSTRAP: bool | None = None
+
     # CORS（逗号分隔，如 "http://localhost,http://localhost:8080"）
     CORS_ORIGINS: str = "http://localhost,http://localhost:8080"
 
@@ -54,6 +76,16 @@ class Settings(BaseSettings):
     ENABLE_METRICS: bool = False
     ENABLE_REQUEST_ID: bool = True
     ENABLE_MEMBER: bool = True
+
+    @field_validator("MODE")
+    @classmethod
+    def _normalize_mode(cls, v: str) -> str:
+        """运行模式归一化：去空白并转大写后再比较。
+
+        此前 `MODE=prod`（小写）会被判为非 PROD，静默套用 DEV 策略——API 文档开放、
+        Cookie 不带 Secure，PROD 的 SECRET_KEY / MYSQL_PASSWORD 强校验也一并被跳过。
+        """
+        return v.strip().upper()
 
     @field_validator("JWT_ALGORITHM")
     @classmethod
@@ -70,18 +102,35 @@ class Settings(BaseSettings):
         短密钥会显著削弱签名强度，PyJWT 也会对 <32 字节的 HMAC 密钥发出
         InsecureKeyLengthWarning。此处对所有模式生效（含 DEV）：开发默认值本身
         已有 46 字节，正常使用不会触发；显式配了短密钥则应尽早失败而不是带病运行。
+
+        额外校验「去空白后的有效长度」：仅按原始长度判断时，40 个空格也能通过，
+        实际熵为零。
         """
         if len(v.encode()) < _MIN_SECRET_KEY_BYTES:
             raise ValueError(f"SECRET_KEY 至少需要 {_MIN_SECRET_KEY_BYTES} 字节")
+        if len(v.strip().encode()) < _MIN_SECRET_KEY_BYTES:
+            raise ValueError("SECRET_KEY 不能由空白字符填充")
+        return v
+
+    @field_validator("CORS_ORIGINS")
+    @classmethod
+    def _reject_wildcard_cors_origin(cls, v: str) -> str:
+        """禁止通配源 `*`：本服务 CORS 启用 allow_credentials=True，两者同用时
+        Starlette 会反射任意 Origin，等价于对全网开放带凭证的跨域访问，
+        令牌 Cookie 的 CSRF 防护随之失效。多源请显式逐条列出。
+        """
+        if "*" in [o.strip() for o in v.split(",")]:
+            raise ValueError("CORS_ORIGINS 不支持通配符 '*'，请显式列出允许的源")
         return v
 
     @model_validator(mode="after")
     def _apply_mode_defaults(self) -> "Settings":
+        is_prod = self.MODE == _MODE_PROD
         if not self.MYSQL_HOST:
-            self.MYSQL_HOST = "mysql" if self.MODE == "PROD" else "127.0.0.1"
+            self.MYSQL_HOST = "mysql" if is_prod else "127.0.0.1"
         if not self.REDIS_HOST:
-            self.REDIS_HOST = "redis" if self.MODE == "PROD" else "127.0.0.1"
-        if self.MODE == "PROD":
+            self.REDIS_HOST = "redis" if is_prod else "127.0.0.1"
+        if is_prod:
             if self.SECRET_KEY == _DEV_SECRET_KEY:
                 raise ValueError("PROD 模式必须通过环境变量设置 SECRET_KEY")
             if self.MYSQL_PASSWORD == "123456":
@@ -93,14 +142,25 @@ class Settings(BaseSettings):
         """是否开放 API 文档：显式设置优先，否则 DEV 开、PROD 关。"""
         if self.ENABLE_DOCS is not None:
             return self.ENABLE_DOCS
-        return self.MODE != "PROD"
+        return self.MODE != _MODE_PROD
 
     @property
     def cookie_secure(self) -> bool:
         """Secure Cookie 开关：显式设置优先，否则 PROD 开、DEV 关。"""
         if self.COOKIE_SECURE is not None:
             return self.COOKIE_SECURE
-        return self.MODE == "PROD"
+        return self.MODE == _MODE_PROD
+
+    @property
+    def bootstrap_allowed(self) -> bool:
+        """是否允许空库免鉴权创建首个管理员：显式设置优先，否则 DEV 开、PROD 关。
+
+        PROD 下该口子等同于「谁先到谁就是管理员」，默认为关；确需自举时显式
+        设 ALLOW_BOOTSTRAP=true 并在建号后立即重启关闭。
+        """
+        if self.ALLOW_BOOTSTRAP is not None:
+            return self.ALLOW_BOOTSTRAP
+        return self.MODE != _MODE_PROD
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -108,17 +168,21 @@ class Settings(BaseSettings):
 
     @property
     def SQLALCHEMY_DATABASE_URL(self) -> str:
-        """同步连接串（mysql+pymysql），仅供 Alembic 迁移使用。"""
+        """同步连接串（mysql+pymysql），仅供 Alembic 迁移使用。
+
+        用户名与密码经 URL 编码：密码里含 `@ / : # ?` 等字符时，未编码会拼出
+        非法连接串（如 `p@ss/w:rd` 会被解析成别的主机与端口）。
+        """
         return (
-            f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
+            f"mysql+pymysql://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
         )
 
     @property
     def SQLALCHEMY_ASYNC_DATABASE_URL(self) -> str:
-        """异步连接串（mysql+asyncmy），应用运行时使用。"""
+        """异步连接串（mysql+asyncmy），应用运行时使用（凭据同样做 URL 编码）。"""
         return (
-            f"mysql+asyncmy://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}"
+            f"mysql+asyncmy://{quote_plus(self.MYSQL_USER)}:{quote_plus(self.MYSQL_PASSWORD)}"
             f"@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
         )
 

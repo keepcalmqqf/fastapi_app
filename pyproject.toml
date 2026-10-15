@@ -47,8 +47,21 @@ ignore = ["B008"]
 [tool.mypy]
 python_version = "3.10"
 strict = false
+# 逐步收紧：先要求所有函数签名完整标注（strict 的其余选项待存量补齐后再开）
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
 ignore_missing_imports = true
 exclude = ["alembic/versions/"]
+
+# 测试代码不强制逐函数标注：pytest fixture 与 client 参数类型价值低、噪音大
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -10,8 +10,8 @@ export interface TokenOut {
 
 export interface User {
   id: number
-  name: string | null
-  email: string | null
+  name: string
+  email: string
   is_active: boolean
 }
 
@@ -32,7 +32,7 @@ export function logout() {
 
 // 注册用户（不种 cookie，成功后需再调 login 建立会话）
 export function register(name: string, email: string, password: string) {
-  return request.post<never, ApiResult<User>>('/user/create_user', {
+  return request.post<never, ApiResult<User>>('/user/', {
     name,
     email,
     password,

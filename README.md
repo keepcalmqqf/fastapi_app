@@ -109,22 +109,38 @@ cd frontend && npm run build   # 产出 frontend/dist
 | POST | `/auth/login` | 登录，返回 `TokenOut`（access + refresh 双令牌）并种下双 HttpOnly Cookie（账号不存在/密码错误/已禁用一律 401） |
 | POST | `/auth/refresh` | 刷新令牌（轮换制：旧 refresh 一次性使用，cookie 优先、body 兜底） |
 | POST | `/auth/logout` | 登出：access jti 进黑名单 + refresh jti 删除 + 清 Cookie |
+| POST | `/auth/change-password` | 修改当前登录用户密码（校验原密码，新密码沿用强度规则；成功后终止该账号全部会话） |
 | POST | `/member/register` | 会员注册（公开） |
 | POST | `/member/login` | 会员登录（同 `/auth/login`，aud=member） |
 | POST | `/member/refresh` | 会员刷新令牌 |
 | POST | `/member/logout` | 会员登出并撤销令牌 |
+| POST | `/member/change-password` | 修改当前登录会员密码（同 `/auth/change-password`） |
+| POST | `/member/verify-email` | 凭验证邮件链接中的 token 标记邮箱已验证（公开，token 即凭证） |
+| POST | `/member/resend-verification` | 重发验证邮件（member 令牌，已验证则返回无需重发） |
 | GET | `/member/me` | 获取当前登录会员（member 令牌） |
 | PATCH | `/member/me` | 更新当前会员昵称（member 令牌） |
 | DELETE | `/member/me` | 注销当前会员（软删除并撤销令牌） |
-| GET | `/member/list` | 分页获取会员列表（admin 令牌） |
-| GET | `/user/get_user?user_id=1` | 通过用户 id 获取用户（不存在 404） |
-| POST | `/user/create_user` | 创建用户；空库时首个管理员可无 token 自举，表非空需 admin 令牌；密码 Argon2 哈希入库 |
+| GET | `/member/` | 分页获取会员列表（admin 令牌） |
+| GET | `/user/{user_id}` | 通过用户 id 获取用户（不存在 404） |
+| POST | `/user/` | 创建用户；空库时首个管理员可自举（`ALLOW_BOOTSTRAP`，PROD 默认关闭），表非空需 admin 令牌；密码 Argon2 哈希入库 |
 | GET | `/user/me` | 获取当前登录用户（admin 令牌） |
-| GET | `/user/list` | 分页获取用户列表（admin 令牌，`page≥1`、`page_size` 1-100 默认 20） |
+| GET | `/user/` | 分页获取用户列表（admin 令牌，`page` 1-10000、`page_size` 1-100 默认 20） |
 | PATCH | `/user/{user_id}` | 更新用户（admin，`{name?,is_active?}`，不存在 404）；置 `is_active=false` 会撤销该账号全部令牌 |
 | DELETE | `/user/{user_id}` | 软删除用户（admin，删自己 400）；同时撤销该账号全部令牌 |
+| POST | `/user/verify-email` | 验证后台账号邮箱 |
+| POST | `/user/resend-verification` | 重发后台账号验证邮件（admin 令牌） |
+| GET | `/audit/logs` | 分页查询审计日志（admin 令牌，可按 `action`/`actor_id` 过滤，按时间倒序） |
+
+路径约定统一为 REST 风格：集合资源用复数前缀的斜杠结尾形式（`GET /user/`、`POST /user/`），
+单个资源用路径参数（`GET /user/{user_id}`）。早期的 RPC 风格路径
+（`/user/list`、`/user/get_user?user_id=`、`/user/create_user`、`/member/list`）已彻底移除，
+不再保留兼容别名。认证与验证类动作仍用动词路径（`/auth/login`、`/member/verify-email`）。
 
 注册/创建用户的密码策略：8-64 位且同时包含字母和数字；name/nickname 2-32 位、去空白后非空；email 统一小写归一化。软删除不释放邮箱唯一约束，已删账号邮箱再注册返回 409。
+
+邮箱验证：会员注册会自动投递验证邮件，`POST /member/verify-email` 凭 token 完成验证。**默认不强制**（`REQUIRE_EMAIL_VERIFICATION=false`，未验证也能登录），置为 `true` 后未验证账号登录返回 403。脚手架不内置 SMTP，`app/services/mailer.py` 的默认实现只把验证链接写进日志，接入真实邮件服务时替换该函数即可。
+
+审计日志：账号创建/更新/删除、改密、会员注销、登录失败都会写入 `audit_log`，用 `GET /audit/logs` 查询。审计有自己的事务边界（写完立即提交），写入失败只记日志、不影响业务结果。
 
 认证要点：access token 默认 30 分钟、refresh token 默认 7 天；后台（`aud=admin`）与会员（`aud=member`）令牌互不通用。access token 带 `type="access"`、refresh token 带 `type="refresh"`，**受保护接口只接受访问令牌，refresh 令牌直接当访问令牌用一律 401**（否则登出后凭长效 refresh 令牌仍可操作后台接口）。登出只让当前设备的令牌失效；**停用/软删用户、会员注销则撤销该账号全部令牌（含其他设备）**，重新启用也不会复活旧会话。取令牌顺序为 `Authorization: Bearer` 优先、其次 `access_token` Cookie；**Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须携带 `X-Requested-With: XMLHttpRequest`，否则 403**（Bearer 来源不受此约束）。
 
@@ -153,7 +169,7 @@ curl -c cookie.jar -X POST http://127.0.0.1:8000/auth/login \
 
 curl -b cookie.jar http://127.0.0.1:8000/user/me
 
-curl -b cookie.jar -X POST http://127.0.0.1:8000/user/create_user \
+curl -b cookie.jar -X POST http://127.0.0.1:8000/user/ \
   -H 'Content-Type: application/json' \
   -H 'X-Requested-With: XMLHttpRequest' \
   -d '{"name":"李四","email":"lisi@test.com","password":"abcd1234"}'
@@ -214,8 +230,21 @@ uv add <package>         # 添加依赖
 uv run fastapi dev       # 开发模式运行（自动重载）
 uv run ruff check .      # lint
 uv run ruff format .     # 格式化
-uv run pytest            # 测试（SQLite 内存库，无需 MySQL/Redis）
+uv run pytest            # 测试（默认 SQLite 内存库，无需 MySQL/Redis）
 docker compose up -d     # 启动 MySQL + Redis
+```
+
+测试默认跑在 SQLite 内存库上。设置 `TEST_DATABASE_URL` 可让同一套用例跑在真实
+MySQL 上，覆盖 SQLite 测不到的方言差异（CI 中两个都跑）：
+
+```bash
+TEST_DATABASE_URL=mysql+asyncmy://root:123456@127.0.0.1:3306/fastapi_test uv run pytest
+```
+
+校验模型与迁移是否漂移（需先连上数据库并 `alembic upgrade head`）：
+
+```bash
+uv run alembic check     # 有差异时非零退出
 ```
 
 可选安装 pre-commit 钩子：`pre-commit install`
@@ -228,7 +257,28 @@ docker build -t fastapi_app .
 
 # 启动完整环境（需先在 .env 中设置 SECRET_KEY 与 MYSQL_PASSWORD）
 docker compose -f docker-compose.prod.yml up -d
+```
 
-# 首次部署执行迁移
+**数据库迁移已内建到容器启动命令**：容器 CMD 会先执行 `alembic upgrade head`
+再拉起服务，因此无需（也不应）手动进容器跑迁移；迁移失败时容器直接退出，
+不会带着不匹配的 schema 对外提供服务。如需单独执行：
+
+```bash
 docker compose -f docker-compose.prod.yml exec fastapi_app alembic upgrade head
 ```
+
+worker 数默认为 2，可按容器 CPU 调整：
+
+```yaml
+# docker-compose.prod.yml → fastapi_app.environment
+WEB_CONCURRENCY: "4"
+```
+
+生产环境建议确认以下开关（compose 已内置，本地自管部署需自行设置）：
+
+| 项 | 生产建议值 | 说明 |
+| --- | --- | --- |
+| `MODE` | `PROD` | 大小写不敏感；非 PROD 会套用 DEV 策略（文档开放、Cookie 不带 Secure、跳过密钥强校验） |
+| `ALLOW_BOOTSTRAP` | `false` | 关闭后空库也不能免鉴权建号；首个管理员请用脚本/CLI 创建 |
+| `ENABLE_RATE_LIMIT` | `true` | 登录/注册接口无本地防爆破，全局限流是唯一兜底 |
+| `METRICS_TOKEN` | 随机串 | 不配置时 `/metrics` 公开 |

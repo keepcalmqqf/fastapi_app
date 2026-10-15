@@ -49,13 +49,23 @@ class UserLogin(BaseModel):
     _normalize_email = field_validator("email", mode="before")(_normalize_email)
 
 
+class ChangePassword(BaseModel):
+    """修改密码入参：必须校验原密码，新密码沿用注册时的强度规则。"""
+
+    old_password: str = Field(max_length=64)
+    new_password: str = Field(min_length=8, max_length=64)
+
+    _check_password = field_validator("new_password")(_validate_password_strength)
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    name: str | None
-    email: str | None
+    name: str
+    email: str
     is_active: bool
+    email_verified: bool
     created_at: datetime
     updated_at: datetime
 

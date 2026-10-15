@@ -8,6 +8,12 @@ async_engine = create_async_engine(
     settings.SQLALCHEMY_ASYNC_DATABASE_URL,
     echo=settings.MODE == "DEV",
     pool_pre_ping=True,
+    # 连接池容量与回收：pool_recycle 需小于 MySQL wait_timeout，避免复用已被
+    # 服务端断开的连接（pool_pre_ping 兜底，二者配合最稳）
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_recycle=settings.DB_POOL_RECYCLE,
+    pool_timeout=settings.DB_POOL_TIMEOUT,
 )
 
 AsyncSessionLocal = async_sessionmaker(

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Integer, String, true
+from sqlalchemy import Boolean, Integer, String, false, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base
@@ -11,7 +11,10 @@ class Member(Base, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "member"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    nickname: Mapped[str | None] = mapped_column(String(32))
-    email: Mapped[str | None] = mapped_column(String(255), unique=True)
-    password: Mapped[str | None] = mapped_column(String(255))
+    # 同 User：业务必填的列在库里也应为 NOT NULL
+    nickname: Mapped[str] = mapped_column(String(32), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # 邮箱是否已验证；是否强制验证后才允许登录由 REQUIRE_EMAIL_VERIFICATION 控制
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())

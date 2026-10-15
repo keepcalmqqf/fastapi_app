@@ -33,7 +33,7 @@ def _set_cookie(response, name: str):
 
 
 def _create_admin(client) -> None:
-    resp = client.post("/user/create_user", json=USER_PAYLOAD)
+    resp = client.post("/user/", json=USER_PAYLOAD)
     assert resp.status_code == 200, resp.text
 
 
@@ -152,10 +152,10 @@ def test_cookie_write_without_csrf_header_forbidden(client):
     _login(client)  # TestClient 自动携带后续请求的 Cookie
 
     payload = {**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"}
-    resp = client.post("/user/create_user", json=payload)
+    resp = client.post("/user/", json=payload)
     assert resp.status_code == 403
 
-    resp = client.post("/user/create_user", json=payload, headers=CSRF_HEADER)
+    resp = client.post("/user/", json=payload, headers=CSRF_HEADER)
     assert resp.status_code == 200, resp.text
 
 
@@ -172,7 +172,7 @@ def test_bearer_write_needs_no_csrf_header(client):
     _create_admin(client)
     token = _login(client).json()["data"]["access_token"]
     resp = client.post(
-        "/user/create_user",
+        "/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers=_auth(token),
     )
@@ -192,11 +192,11 @@ def test_refresh_token_rejected_as_access_token(client):
     refresh_token = _login(client).json()["data"]["refresh_token"]
 
     assert client.get("/user/me", headers=_auth(refresh_token)).status_code == 401
-    assert client.get("/user/list", headers=_auth(refresh_token)).status_code == 401
+    assert client.get("/user/", headers=_auth(refresh_token)).status_code == 401
 
     # 写接口同样拒绝，且不得产生副作用
     resp = client.post(
-        "/user/create_user",
+        "/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers=_auth(refresh_token),
     )
@@ -237,7 +237,7 @@ def test_refresh_token_unusable_as_access_token_after_logout(client):
     # 关键回归：拿 refresh 令牌直接当访问令牌用，必须 401
     assert client.get("/user/me", headers=_auth(refresh_token)).status_code == 401
     resp = client.post(
-        "/user/create_user",
+        "/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"},
         headers=_auth(refresh_token),
     )
@@ -322,3 +322,85 @@ def test_revoke_subject_noop_without_redis():
     """Redis 未初始化时撤销为 no-op。"""
     asyncio.run(revoke_subject("admin", "1", None))
     assert revocation_key("member", "7") == "revoke:member:7"
+
+
+# ---------- 修改密码 ----------
+
+_NEW_PASSWORD = "newpass123"
+
+
+def _change_password(client, token: str, old_password: str, new_password: str):
+    return client.post(
+        "/auth/change-password",
+        json={"old_password": old_password, "new_password": new_password},
+        headers={"Authorization": f"Bearer {token}", **CSRF_HEADER},
+    )
+
+
+def test_change_password_success(client):
+    """改密后旧密码不能再登录，新密码可以。"""
+    _create_admin(client)
+    token = _login(client).json()["data"]["access_token"]
+
+    resp = _change_password(client, token, USER_PAYLOAD["password"], _NEW_PASSWORD)
+    assert resp.status_code == 200
+
+    old_login = client.post(
+        "/auth/login", json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]}
+    )
+    assert old_login.status_code == 401
+    new_login = client.post(
+        "/auth/login", json={"email": USER_PAYLOAD["email"], "password": _NEW_PASSWORD}
+    )
+    assert new_login.status_code == 200
+
+
+def test_change_password_wrong_old_password(client):
+    """原密码错误返回 400，且密码未被改动。"""
+    _create_admin(client)
+    token = _login(client).json()["data"]["access_token"]
+
+    resp = _change_password(client, token, "wrong-password", _NEW_PASSWORD)
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 400
+
+    assert (
+        client.post(
+            "/auth/login",
+            json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]},
+        ).status_code
+        == 200
+    )
+
+
+def test_change_password_weak_new_password_rejected(client):
+    """新密码沿用强度规则：纯数字被 422 拒绝。"""
+    _create_admin(client)
+    token = _login(client).json()["data"]["access_token"]
+
+    resp = _change_password(client, token, USER_PAYLOAD["password"], "12345678")
+    assert resp.status_code == 422
+
+
+def test_change_password_requires_auth(client):
+    """未登录不能改密。"""
+    _create_admin(client)
+    client.cookies.clear()
+    resp = client.post(
+        "/auth/change-password",
+        json={"old_password": USER_PAYLOAD["password"], "new_password": _NEW_PASSWORD},
+        headers=CSRF_HEADER,
+    )
+    assert resp.status_code == 401
+
+
+def test_change_password_revokes_all_sessions(client):
+    """凭证变更后终止全部会话：改动前签发的令牌立即失效，需重新登录。"""
+    _create_admin(client)
+    token = _login(client).json()["data"]["access_token"]
+    assert client.get("/user/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+
+    resp = _change_password(client, token, USER_PAYLOAD["password"], _NEW_PASSWORD)
+    assert resp.status_code == 200
+
+    assert client.get("/user/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401

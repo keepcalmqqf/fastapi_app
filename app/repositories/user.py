@@ -1,9 +1,8 @@
-from datetime import datetime, timezone
-
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import User
+from app.models.base import utc_now
 from app.schemas.user import CreateUser
 
 
@@ -55,12 +54,12 @@ async def update_user(db: AsyncSession, user: User, data: dict) -> User:
         if value is not None:
             setattr(user, key, value)
     await db.flush()
-    # onupdate 列（updated_at）的新值由数据库生成，flush 后该属性处于过期状态，
-    # async 下惰性刷新会抛 MissingGreenlet，这里显式刷新保证返回值可直接序列化
+    # 显式刷新：确保返回值带上数据库侧最终落定的字段（server_default / onupdate 兜底），
+    # 同时避免 async 下惰性刷新抛 MissingGreenlet
     await db.refresh(user)
     return user
 
 
 async def soft_delete_user(db: AsyncSession, user: User) -> None:
-    user.deleted_at = datetime.now(timezone.utc)
+    user.deleted_at = utc_now()
     await db.flush()

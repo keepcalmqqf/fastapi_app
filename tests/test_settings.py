@@ -4,6 +4,10 @@
 所有用例都传 `_env_file=None`，避免受本地 .env 文件影响。
 """
 
+# `_env_file` 是 pydantic-settings 的私有关键字参数（用于屏蔽本地 .env 干扰），
+# mypy 无法从生成的 __init__ 签名中识别，故在本文件内豁免该错误码。
+# mypy: disable-error-code=call-arg
+
 import pytest
 from pydantic import ValidationError
 
@@ -64,3 +68,51 @@ def test_jwt_algorithm_whitelist():
 def test_cors_origin_list_splits_and_trims():
     s = Settings(CORS_ORIGINS="http://a.com, http://b.com ,", _env_file=None)
     assert s.cors_origin_list == ["http://a.com", "http://b.com"]
+
+
+def test_mode_is_case_insensitive():
+    """MODE 去空白并转大写后比较：`prod` 此前会被当成 DEV，整套生产策略失效。"""
+    s = Settings(
+        MODE=" prod ", SECRET_KEY=STRONG_KEY, MYSQL_PASSWORD="strong-password", _env_file=None
+    )
+    assert s.MODE == "PROD"
+    assert s.docs_enabled is False
+    assert s.cookie_secure is True
+
+
+def test_lowercase_prod_still_enforces_strong_credentials():
+    """小写 PROD 同样触发强校验，不能绕过。"""
+    with pytest.raises(ValidationError):
+        Settings(MODE="prod", SECRET_KEY=STRONG_KEY, _env_file=None)
+
+
+def test_db_credentials_are_url_encoded():
+    """用户名/密码含 `@ / : #` 时必须编码，否则拼出的是非法连接串。"""
+    s = Settings(MYSQL_USER="u#1", MYSQL_PASSWORD="p@ss/w:rd", _env_file=None)
+    assert "u%231" in s.SQLALCHEMY_DATABASE_URL
+    assert "p%40ss%2Fw%3Ard" in s.SQLALCHEMY_DATABASE_URL
+    assert "p%40ss%2Fw%3Ard" in s.SQLALCHEMY_ASYNC_DATABASE_URL
+
+
+def test_blank_padded_secret_key_rejected():
+    """纯空白填充的密钥长度达标但熵为零，必须拒绝。"""
+    with pytest.raises(ValidationError):
+        Settings(SECRET_KEY=" " * 40, _env_file=None)
+
+
+def test_wildcard_cors_origin_rejected():
+    """`*` 与 allow_credentials 同用等于对全网开放带凭证跨域，配置层直接拒绝。"""
+    with pytest.raises(ValidationError):
+        Settings(CORS_ORIGINS="*", _env_file=None)
+
+
+def test_bootstrap_allowed_defaults_to_mode():
+    """空库自举开关：DEV 默认开、PROD 默认关，显式设置优先。"""
+    assert Settings(_env_file=None).bootstrap_allowed is True
+    assert (
+        Settings(
+            MODE="PROD", SECRET_KEY=STRONG_KEY, MYSQL_PASSWORD="strong-password", _env_file=None
+        ).bootstrap_allowed
+        is False
+    )
+    assert Settings(ALLOW_BOOTSTRAP=False, _env_file=None).bootstrap_allowed is False
