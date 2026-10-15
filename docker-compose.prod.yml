@@ -58,8 +58,10 @@ services:
       # 值偏保守（100/minute 按 IP 计），如需对登录接口单独收紧请在网关侧配置。
       ENABLE_RATE_LIMIT: "true"
       RATE_LIMIT: "100/minute"
-      # 限流计数挪到 Redis：否则 N 个 worker 各有内存计数，实际阈值放大成 100 × N
-      RATE_LIMIT_STORAGE_URI: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+      # 限流计数默认已走 Redis（由 REDIS_* 自动推导，凭据自动 URL 编码），
+      # 因此 N 个 worker 共用一份计数，阈值就是这里的 100/minute 而非 100 × N。
+      # 只有在确需退回进程内存时才显式设置：RATE_LIMIT_STORAGE_URI: "memory://"
+      # Redis 不可用时各 worker 会自动降级为内存计数并打 error 日志，不会直接放行。
       # 生产建议开启指标采集；不配 METRICS_TOKEN 时 /metrics 公开，务必一起设置
       ENABLE_METRICS: "true"
       METRICS_TOKEN: ${METRICS_TOKEN}

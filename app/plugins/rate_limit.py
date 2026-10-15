@@ -24,6 +24,9 @@ _RATE_LIMITED_BODY = result.failure(code=429, message="请求过于频繁，请�
 # 且更难察觉。因此启动时显式探测，缺失就关闭限流并打 error 日志。
 _REQUIRED_INTERNALS = ("_check_request_limit", "_inject_headers")
 
+# 降级标记：挂在 Limiter 实例上，表示本进程已因共享存储不可用退回内存计数
+_MEMORY_FALLBACK_MARK = "_rate_limit_memory_fallback"
+
 
 def _missing_internals(limiter: Any) -> list[str]:
     """返回 Limiter 上缺失的私有入口名称；为空表示兼容。"""
@@ -76,6 +79,7 @@ class _DefaultLimitMiddleware(BaseHTTPMiddleware):
             # 限流后端异常时放行（fail-open）并记日志：限流是旁路保护，
             # 不应因存储问题让整个 API 不可用。
             logger.warning("限流校验失败，本次请求放行（fail-open）", exc_info=True)
+            _downgrade_to_memory(request.app, limiter)
             return await call_next(request)
         response = await call_next(request)
         # 限流头（X-RateLimit-*）：limit_for_header 由 __evaluate_limits 写入 state，
@@ -89,15 +93,44 @@ class _DefaultLimitMiddleware(BaseHTTPMiddleware):
             return response
 
 
-def setup(app: FastAPI) -> None:
-    limiter = Limiter(
+def _build_limiter(storage_uri: str, *, enabled: bool = True) -> Limiter:
+    return Limiter(
         key_func=get_remote_address,
         default_limits=[settings.RATE_LIMIT],
         # 响应头（X-RateLimit-Limit/Remaining/Reset）便于客户端自行退避
         headers_enabled=True,
-        # 共享存储：多 worker 时内存计数各进程独立，实际阈值会被放大
-        storage_uri=settings.RATE_LIMIT_STORAGE_URI,
+        storage_uri=storage_uri,
+        enabled=enabled,
     )
+
+
+def _downgrade_to_memory(app: FastAPI, limiter: Limiter) -> None:
+    """共享存储不可用（Redis 宕机等）时把本进程的计数退回内存，只执行一次。
+
+    不降级的话，存储故障期间每个请求都会走 fail-open，限流等于整体消失；退回
+    内存至少保留一层保护（代价是阈值放大为 RATE_LIMIT × worker 数）。放行的那
+    一次请求无法补记，属于可接受的误差。
+
+    不做自动恢复：存储恢复后需重启进程回到共享计数，避免反复探测带来的抖动。
+    """
+    if getattr(limiter, _MEMORY_FALLBACK_MARK, False):
+        return
+    try:
+        fallback = _build_limiter(settings.RATE_LIMIT_MEMORY_STORAGE_URI, enabled=limiter.enabled)
+        setattr(fallback, _MEMORY_FALLBACK_MARK, True)
+    except Exception:
+        logger.warning("限流降级到内存计数失败，保持 fail-open", exc_info=True)
+        return
+    app.state.limiter = fallback
+    logger.error(
+        "限流共享存储不可用，本进程已降级为内存计数：多 worker 下实际阈值放大为 RATE_LIMIT × "
+        "worker 数；存储恢复后需重启进程生效"
+    )
+
+
+def setup(app: FastAPI) -> None:
+    storage_uri = settings.rate_limit_storage_uri
+    limiter = _build_limiter(storage_uri)
     missing = _missing_internals(limiter)
     if missing:
         # 依赖的私有入口不存在：显式关闭限流并告警，而不是让它悄悄变成空操作
@@ -107,6 +140,13 @@ def setup(app: FastAPI) -> None:
             ", ".join(missing),
         )
     app.state.limiter = limiter
+    if limiter.enabled:
+        logger.info(
+            "限流存储: %s",
+            "共享计数（Redis）"
+            if storage_uri != settings.RATE_LIMIT_MEMORY_STORAGE_URI
+            else "进程内存（多 worker 下阈值会放大）",
+        )
     app.add_middleware(_DefaultLimitMiddleware)
 
     # 处理器保持同步（不要改成 async def）：供 @limiter.limit() 装饰器路径使用，

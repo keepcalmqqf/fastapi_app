@@ -195,7 +195,7 @@ curl -b cookie.jar -X POST http://127.0.0.1:8000/user/ \
 | `ENABLE_DOCS` | 未设置（DEV 开、PROD 关） | API 文档开关，显式设置则以设置为准 |
 | `CORS_ORIGINS` | `http://localhost,...` | 允许的跨域来源，逗号分隔 |
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | 限流插件 |
-| `RATE_LIMIT_STORAGE_URI` | 未设置（进程内存） | 限流计数存储；多 worker 部署请指到 Redis，见下方说明 |
+| `RATE_LIMIT_STORAGE_URI` | 未设置（自动推导 Redis） | 限流计数存储；设为 `memory://` 强制退回进程内存，见下方说明 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件插件 |
 | `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA |
@@ -275,15 +275,22 @@ worker 数默认为 2，可按容器 CPU 调整：
 WEB_CONCURRENCY: "4"
 ```
 
-**注意：限流阈值会随 worker 数放大。** 默认存储是进程内存，N 个 worker 各有
-一份计数，实际阈值等于 `RATE_LIMIT × N`（实测 2 worker + `100/minute` 约
-`200/minute`）。需要全局精确限额时把计数挪到 Redis：
+**限流计数默认已是全局共享的。** `RATE_LIMIT_STORAGE_URI` 不设置时，会按
+`REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` 自动拼出连接串（密码的特殊字符
+自动做 URL 编码，不会拼出非法 URI）。这样 N 个 worker 共用一份计数，实际阈值
+就等于 `RATE_LIMIT`，不随 worker 数放大。
+
+只有两种情况下会退回进程内存计数（此时阈值放大为 `RATE_LIMIT × N`，实测
+2 worker + `100/minute` 约 `200/minute`）：
 
 ```yaml
-RATE_LIMIT_STORAGE_URI: "redis://:${REDIS_PASSWORD}@redis:6379/0"
+# 1. 显式指定（单机调试、测试用）
+RATE_LIMIT_STORAGE_URI: "memory://"
+# 2. Redis 不可用：各 worker 自动降级并打 error 日志，存储恢复后需重启进程
 ```
 
-Redis 不可用时按既有的 fail-open 策略放行（记 warning 日志），不会拖垮 API。
+降级优于直接放行：Redis 故障期间若沿用 fail-open，限流会整体消失；退回内存
+至少还保留一层保护。降级过程中放行的那一次请求无法补记，属可接受误差。
 
 生产环境建议确认以下开关（compose 已内置，本地自管部署需自行设置）：
 
@@ -297,6 +304,6 @@ Redis 不可用时按既有的 fail-open 策略放行（记 warning 日志），
 `pyproject.toml` 中声明，不要从生产镜像里裁掉。
 
 | `ENABLE_RATE_LIMIT` | `true` | 登录/注册接口无本地防爆破，全局限流是唯一兜底 |
-| `RATE_LIMIT_STORAGE_URI` | `redis://...` | 多 worker 下不配则实际阈值 = `RATE_LIMIT × worker 数` |
+| `RATE_LIMIT_STORAGE_URI` | 留空（自动推导 Redis） | 多 worker 下显式设 `memory://` 会让阈值 = `RATE_LIMIT × worker 数` |
 | `ENABLE_METRICS` | `true` | 不开启时 `/metrics` 为 404，生产建议配合 `METRICS_TOKEN` 打开 |
 | `METRICS_TOKEN` | 随机串 | 不配置时 `/metrics` 公开 |

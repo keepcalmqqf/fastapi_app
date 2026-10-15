@@ -1,3 +1,4 @@
+from typing import ClassVar
 from urllib.parse import quote
 
 from pydantic import field_validator, model_validator
@@ -17,6 +18,12 @@ _MODE_PROD = "PROD"
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # 限流存储显式回退到进程内存的取值（多 worker 下阈值会放大，仅供单机/测试使用）
+    RATE_LIMIT_MEMORY_STORAGE_URI: ClassVar[str] = "memory://"
+    # 限流计数所在的 Redis 库：与业务数据同库（redis-py 默认 db 0），
+    # key 由 slowapi 自行加前缀，不会与 refresh token 等的 key 冲突
+    RATE_LIMIT_REDIS_DB: ClassVar[int] = 0
 
     MODE: str = "DEV"
 
@@ -73,9 +80,10 @@ class Settings(BaseSettings):
     # 可插拔能力开关
     ENABLE_RATE_LIMIT: bool = False
     RATE_LIMIT: str = "100/minute"
-    # 限流计数存储：留空时用进程内存。多 worker 部署下各进程独立计数，
-    # 实际阈值会放大为 RATE_LIMIT × worker 数（实测 2 worker + 100/minute ≈ 200/minute）。
-    # 需要全局精确限额时指到 Redis，例如 redis://:密码@redis:6379/0。
+    # 限流计数存储：留空时自动推导为共享 Redis（见 rate_limit_storage_uri）。
+    # 多 worker 部署下进程内存计数各进程独立，实际阈值放大为 RATE_LIMIT × worker 数
+    # （实测 2 worker + 100/minute ≈ 200/minute），故默认指向 Redis 让限额全局生效。
+    # 确需内存计数时显式设为 RATE_LIMIT_MEMORY_STORAGE_URI。
     RATE_LIMIT_STORAGE_URI: str | None = None
     ENABLE_METRICS: bool = False
     ENABLE_REQUEST_ID: bool = True
@@ -169,6 +177,26 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def rate_limit_storage_uri(self) -> str:
+        """限流计数存储连接串：显式配置优先，留空时自动推导为共享 Redis。
+
+        默认走 Redis 是为了让多 worker 共用一份计数：进程内存模式下各 worker
+        独立累加，实际阈值会放大成 RATE_LIMIT × worker 数，等于配了个假限额。
+        需要内存计数（单机调试、测试）时显式设为 RATE_LIMIT_MEMORY_STORAGE_URI。
+        """
+        if self.RATE_LIMIT_STORAGE_URI:
+            return self.RATE_LIMIT_STORAGE_URI
+        return self._build_redis_url()
+
+    def _build_redis_url(self) -> str:
+        """按 REDIS_* 拼共享存储连接串（凭据 URL 编码，避免特殊字符拼出非法 URI）。"""
+        # IPv6 地址在 URI 里必须带方括号，否则端口切分会把它截成两段
+        host = f"[{self.REDIS_HOST}]" if ":" in self.REDIS_HOST else self.REDIS_HOST
+        # 用 quote（而非 quote_plus）：加号在密码里是字面字符，不该被解成空格
+        auth = f":{quote(self.REDIS_PASSWORD, safe='')}@" if self.REDIS_PASSWORD else ""
+        return f"redis://{auth}{host}:{self.REDIS_PORT}/{self.RATE_LIMIT_REDIS_DB}"
 
     @property
     def SQLALCHEMY_DATABASE_URL(self) -> str:

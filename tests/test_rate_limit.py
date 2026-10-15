@@ -142,25 +142,68 @@ def test_rate_limit_headers_exposed(monkeypatch):
     assert resp.headers.get("x-ratelimit-limit") == "5"
 
 
-def test_shared_storage_uri_and_headers_are_forwarded(monkeypatch):
-    """配置了共享存储时必须真的传给 Limiter。
-
-    多 worker 部署下内存计数各进程独立，实际阈值会放大成 RATE_LIMIT × worker 数
-    （实测 2 worker + 100/minute 约等于 200/minute），只有共享存储才能让限额全局生效。
-    """
+def _capture_limiter_kwargs(monkeypatch) -> dict[str, object]:
+    """拦截 Limiter.__init__，返回它实际收到的关键字参数。"""
     captured: dict[str, object] = {}
     real_init = Limiter.__init__
 
-    def spy(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+    def spy(self, *args, **kwargs):
         captured.update(kwargs)
         real_init(self, *args, **kwargs)
 
     monkeypatch.setattr(Limiter, "__init__", spy)
-    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE_URI", "redis://redis:6379/0")
+    return captured
+
+
+def test_storage_uri_defaults_to_shared_redis(monkeypatch):
+    """未显式配置时自动推导 Redis 连接串，让多 worker 共用一份计数。
+
+    进程内存模式下各 worker 独立累加，实际阈值放大成 RATE_LIMIT × worker 数，
+    等于配了个假限额（实测 2 worker + 100/minute ≈ 200/minute）。
+    """
+    captured = _capture_limiter_kwargs(monkeypatch)
+    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE_URI", None)
+    monkeypatch.setattr(settings, "REDIS_HOST", "redis")
+    monkeypatch.setattr(settings, "REDIS_PORT", 6379)
+    monkeypatch.setattr(settings, "REDIS_PASSWORD", "p@ss/w:rd")
 
     _decorated_app()
-    assert captured["storage_uri"] == "redis://redis:6379/0"
+    # 凭据做 URL 编码：不编码时含 @ / : 的密码会拼出非法连接串
+    assert captured["storage_uri"] == "redis://:p%40ss%2Fw%3Ard@redis:6379/0"
     assert captured["headers_enabled"] is True
+
+
+def test_explicit_memory_uri_is_respected(monkeypatch):
+    """显式指定 memory:// 时不推导 Redis——单机调试与测试的逃生舱。"""
+    captured = _capture_limiter_kwargs(monkeypatch)
+    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE_URI", settings.RATE_LIMIT_MEMORY_STORAGE_URI)
+
+    _decorated_app()
+    assert captured["storage_uri"] == "memory://"
+
+
+def test_shared_storage_error_downgrades_to_memory(monkeypatch):
+    """共享存储不可用（Redis 宕机）时降级为内存计数，而不是持续 fail-open。
+
+    不降级的话故障期间每个请求都放行，限流整体消失；降级后至少保留一层保护，
+    代价是阈值放大为 RATE_LIMIT × worker 数。
+    """
+    monkeypatch.setattr(settings, "RATE_LIMIT", "2/minute")
+    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE_URI", "redis://127.0.0.1:1/0")
+    app = _decorated_app()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Redis 不可用（测试模拟）")
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.limiter, "_check_request_limit", boom)
+        assert client.get("/ping").status_code == 200  # 首次故障放行并触发降级
+        # 降级后内存计数继续生效：后续请求仍会撞上限额
+        assert client.get("/ping").status_code == 200
+        assert client.get("/ping").status_code == 200
+        assert client.get("/ping").status_code == 429
+
+    assert getattr(app.state.limiter, rate_limit_plugin._MEMORY_FALLBACK_MARK) is True
 
 
 def test_incompatible_limiter_disables_rate_limiting():

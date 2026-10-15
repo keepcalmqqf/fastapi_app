@@ -11,6 +11,7 @@ from sqlalchemy.pool import NullPool, StaticPool
 
 from app.api import health as health_module
 from app.core.database import get_db
+from app.core.settings import settings
 from app.main import app
 from app.models import Base
 
@@ -119,6 +120,15 @@ class FakeRedis:
 
 
 fake_redis = FakeRedis()
+
+
+@pytest.fixture(autouse=True)
+def rate_limit_memory_storage(monkeypatch: pytest.MonkeyPatch):
+    """限流计数固定在进程内存：生产默认会推导到 Redis，测试环境既可能没有 Redis，
+    也让用例之间共享计数（同一 testclient IP + 同路径）互相污染成 flaky。
+    """
+    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE_URI", settings.RATE_LIMIT_MEMORY_STORAGE_URI)
+    yield
 
 
 @pytest.fixture(autouse=True)
