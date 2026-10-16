@@ -105,6 +105,10 @@
 | `ENABLE_I18N` | `true` | 国际化插件开关：按请求解析语种并翻译统一响应文案（详见「国际化」章节） |
 | `I18N_LOCALES` / `I18N_DEFAULT_LOCALE` | `zh-CN,en-US` / `zh-CN` | 支持的语种与默认语种 |
 | `ENABLE_MEMBER` | `true` | 会员（C 端用户）模块开关，关闭后 `/api/v1/member` 路由不注册（模型与表结构保留） |
+| `ENABLE_TASKS` / `TASK_BACKEND` / `TASK_WORKERS` | `false` / `memory` / `4` | 异步任务插件：开关、后端（memory 进程内 / redis 分布式）、worker/消费者数 |
+| `TASK_STREAM` / `TASK_GROUP` / `TASK_RESULT_TTL` / `TASK_MAX_RETRIES` | `task:jobs` / `task:workers` / `86400` / `3` | redis 后端：Stream 键与消费组、结果哈希 TTL、失败重试次数 |
+| `TASK_BLOCK_MS` / `TASK_CLAIM_MIN_IDLE_MS` / `TASK_RECLAIM_INTERVAL` | `5000` / `60000` / `30.0` | redis 后端：阻塞读取毫秒、pending 回收空闲阈值、sweeper 扫描间隔 |
+| `TASK_TASKS_MODULE` / `TASK_CONSUMER_NAME` | `app.tasks` / 空 | redis 后端：具名任务定义模块、worker 消费者名前缀（空=主机名-pid） |
 | `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA（API 路由优先匹配） |
 
 ## 构建与运行命令
@@ -199,7 +203,9 @@ uv run alembic upgrade head
 
 ## 插件开发约定
 
-`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter；X-Request-ID 仅接受 `^[A-Za-z0-9_-]{1,64}$`，非法值自动生成 uuid）、`rate_limit`（slowapi 限流，超限返回统一格式 429。**不使用 slowapi 自带的 SlowAPIMiddleware**：FastAPI 0.141 起 `include_router` 注册的是没有 `endpoint` 属性的 `_IncludedRouter`，slowapi 的 `_find_route_handler` 查找恒为 None 从而把每个请求判为豁免，导致限流在真实应用上整体静默失效；且它无法 await 协程处理器时会回退到默认 body，泄露限流阈值。现改为自建中间件，按「是否命中 API 路由」判定并直接调用 `limiter._check_request_limit`，SPA/静态资源豁免，详见 `app/plugins/rate_limit.py` 注释与 `tests/test_rate_limit.py`）、`metrics`（Prometheus `/metrics`；配置 `METRICS_TOKEN` 后要求 `Bearer <token>`，否则 401，未配置保持公开）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
+`app/plugins/` 下每个模块是一个可选能力。新增插件步骤：新建模块 → 实现 `setup(app)` → 在 `setup_plugins`（`app/plugins/__init__.py`）中按开关登记 → 在 `Settings` 加 `ENABLE_XXX` 开关。现有插件：`request_id`（请求 ID + 日志 Filter；X-Request-ID 仅接受 `^[A-Za-z0-9_-]{1,64}$`，非法值自动生成 uuid）、`rate_limit`（slowapi 限流，超限返回统一格式 429。**不使用 slowapi 自带的 SlowAPIMiddleware**：FastAPI 0.141 起 `include_router` 注册的是没有 `endpoint` 属性的 `_IncludedRouter`，slowapi 的 `_find_route_handler` 查找恒为 None 从而把每个请求判为豁免，导致限流在真实应用上整体静默失效；且它无法 await 协程处理器时会回退到默认 body，泄露限流阈值。现改为自建中间件，按「是否命中 API 路由」判定并直接调用 `limiter._check_request_limit`，SPA/静态资源豁免，详见 `app/plugins/rate_limit.py` 注释与 `tests/test_rate_limit.py`）、`metrics`（Prometheus `/metrics`；配置 `METRICS_TOKEN` 后要求 `Bearer <token>`，否则 401，未配置保持公开）、`tasks`（异步任务执行器，`TASK_BACKEND` 二选一：`memory`=进程内有界队列+N 个 worker 协程，单机 Fire-and-forget、重启即丢；`redis`=Redis Streams 消费组，分布式/跨进程/可恢复/失败重试。公共 API `task_manager.submit(handler,*args)` / 先 `@task_manager.task("名")` 注册再 `submit_named("名",*args)`；`GET /api/v1/tasks` 观测（memory 返回 recent，redis 传 `?job_id=` 查单条）。**redis 后端只支持具名任务**：任务须跨进程序列化，本地闭包无法投递（`submit` 在 redis 模式抛错），处理器定义在 `TASK_TASKS_MODULE`（默认 `app.tasks`）。memory 后端的 worker 启停在 `app/main.py` 的 lifespan；redis 后端的 Web 进程只投递/查询，**消费由独立 worker 进程完成**：`python -m app.plugins.tasks_worker`（可多进程/多机扩容，`-c` 指定单进程消费者数）。可靠投递为 at-least-once：执行成功/最终失败才 XACK，掉线消费者遗留的 pending 由 sweeper 用 XAUTOCLAIM 抢回重投，处理器需幂等）、`cache`（`@cached("user", ttl=300)` 装饰器，Redis 未初始化时自动回退直调，无需开关）。
+
+**异步任务插件的队列必须在运行时循环创建**：`TaskManager` 在 `start()`（而非 `__init__`）里惰性创建 `asyncio.Queue`，否则队列会绑定到模块导入时的事件循环，而应用实际运行在另一个循环（TestClient 后台循环 / uvicorn 循环），worker 一操作队列就抛 `bound to a different event loop`。详见 `app/plugins/tasks.py` 注释。
 
 ## 部署
 

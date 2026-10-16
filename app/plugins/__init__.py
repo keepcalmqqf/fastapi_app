@@ -34,3 +34,8 @@ def setup_plugins(app: FastAPI) -> None:
 
         websocket.setup(app)
         logger.info("插件已启用: websocket (%s)", settings.WEBSOCKET_PATH)
+    if settings.ENABLE_TASKS:
+        from app.plugins import tasks
+
+        tasks.setup(app)
+        logger.info("插件已启用: tasks (worker=%d)", settings.TASK_WORKERS)

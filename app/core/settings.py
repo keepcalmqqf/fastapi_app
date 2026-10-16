@@ -110,6 +110,38 @@ class Settings(BaseSettings):
     # 多实例部署需在前面挂 LB/网关做全局限流，本上限只约束单进程。
     WEBSOCKET_MAX_CONNECTIONS: int = 1000
 
+    # 异步任务插件：关闭时连路由与 worker 都不存在，与未集成行为完全一致
+    ENABLE_TASKS: bool = False
+    # 任务后端：memory=进程内有界队列+worker 协程（单机、Fire-and-forget，重启即丢）；
+    # redis=Redis Streams 消费组（分布式、跨进程/跨机、可恢复）。切换只改这一项。
+    TASK_BACKEND: str = "memory"
+    # worker 协程数量：memory 后端为进程内并发消费数；redis 后端为单个 worker 进程内的消费者数
+    TASK_WORKERS: int = 4
+    # 任务队列容量上限；0 表示无界（仅受内存约束）。队列满时 submit 直接拒绝
+    # （置任务为 failed）而非阻塞请求协程，避免请求被背压拖死。
+    TASK_MAX_QUEUE: int = 0
+    # 关闭时等待在途任务自然收尾的最长秒数；超时则强制取消剩余任务
+    TASK_SHUTDOWN_TIMEOUT: float = 10.0
+
+    # ---- 分布式（Redis Streams）后端专用配置 ----
+    # Stream 键名与消费组名（XADD / XGROUP CREATE）。按业务可分队列隔离。
+    TASK_STREAM: str = "task:jobs"
+    TASK_GROUP: str = "task:workers"
+    # 任务结果/状态哈希（task:result:<job_id>）的过期秒数；用于按 job_id 查询，非永久存储
+    TASK_RESULT_TTL: int = 86400
+    # 执行失败后的最大自动重试次数（不含首次）；超过则标记 failed
+    TASK_MAX_RETRIES: int = 3
+    # 消费者阻塞读取毫秒数（XREADGROUP BLOCK）；0 表示一直阻塞
+    TASK_BLOCK_MS: int = 5000
+    # 回收阈值：pending 中空闲超过该毫秒的条目视为掉线消费者遗留，由 XAUTOCLAIM 抢回重投
+    TASK_CLAIM_MIN_IDLE_MS: int = 60000
+    # 回收 sweeper 的扫描间隔秒数
+    TASK_RECLAIM_INTERVAL: float = 30.0
+    # 具名任务定义所在模块（worker 进程与 Web 端都会 import 以解析名称→处理器）
+    TASK_TASKS_MODULE: str = "app.tasks"
+    # worker 消费组内的消费者名前缀；留空则用 主机名-pid 保证多进程/多机不冲突
+    TASK_CONSUMER_NAME: str = ""
+
     @field_validator("MODE")
     @classmethod
     def _normalize_mode(cls, v: str) -> str:

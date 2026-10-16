@@ -15,6 +15,7 @@ from app.core.settings import settings
 from app.core.static import SPAStaticFiles
 from app.plugins import setup_plugins
 from app.plugins.cache import set_redis
+from app.plugins.tasks import task_manager
 
 logging.basicConfig(level=logging.INFO)
 
@@ -24,7 +25,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     redis = create_redis()
     app.state.redis = redis
     set_redis(redis)
+    # 异步任务插件：Redis/DB 就绪后再启动 worker；关闭时先停 worker（在 Redis 仍可用时
+    # 让在途任务自然收尾），最后才关闭资源
+    if settings.ENABLE_TASKS:
+        await task_manager.start()
     yield
+    if settings.ENABLE_TASKS:
+        await task_manager.stop()
     await redis.aclose()
     await async_engine.dispose()
 
