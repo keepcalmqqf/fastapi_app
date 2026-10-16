@@ -94,6 +94,18 @@ def test_prod_metrics_enabled_requires_token():
     assert s.METRICS_TOKEN == "metrics-secret"
 
 
+def test_i18n_defaults_are_off_and_parse_to_list():
+    """i18n 默认关闭；语种配置按逗号切分，空配置回退默认语种。
+
+    显式传 ENABLE_I18N=False：开发者可能为了调试在 shell 里导出该变量，
+    而 pydantic-settings 会读进程环境，不隔离会让断言随环境漂移。
+    """
+    s = Settings(ENABLE_I18N=False, _env_file=None)
+    assert s.ENABLE_I18N is False
+    assert s.i18n_locale_list == ["zh-CN", "en-US"]
+    assert Settings(I18N_LOCALES="", _env_file=None).i18n_locale_list == [s.I18N_DEFAULT_LOCALE]
+
+
 def test_jwt_algorithm_whitelist():
     """JWT_ALGORITHM 仅允许 HS256/HS384/HS512，防止误配 none 等不安全算法。"""
     for alg in ("HS256", "HS384", "HS512"):

@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     ENABLE_METRICS: bool = False
     ENABLE_REQUEST_ID: bool = True
     ENABLE_MEMBER: bool = True
+    # 国际化（i18n）插件：按请求解析语种并翻译统一响应的文案
+    ENABLE_I18N: bool = True
+    # 支持的语种与默认语种；词条表见 app/plugins/i18n.py
+    I18N_LOCALES: str = "zh-CN,en-US"
+    I18N_DEFAULT_LOCALE: str = "zh-CN"
 
     @field_validator("MODE")
     @classmethod
@@ -187,6 +192,12 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def i18n_locale_list(self) -> list[str]:
+        """i18n 支持的语种列表；配置为空时回退为默认语种，避免插件解析出空列表。"""
+        locales = [o.strip() for o in self.I18N_LOCALES.split(",") if o.strip()]
+        return locales or [self.I18N_DEFAULT_LOCALE]
 
     @property
     def rate_limit_storage_uri(self) -> str:

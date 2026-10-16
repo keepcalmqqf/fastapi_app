@@ -56,7 +56,9 @@ async def bootstrap(
         detail={"email": created.email, "bootstrap": True},
         ip=audit_service.client_ip(request),
     )
-    return result.ok(data=UserOut.model_validate(created), message="管理员初始化成功")
+    return result.ok(
+        data=UserOut.model_validate(created), message="管理员初始化成功", translate=True
+    )
 
 
 @router.get("/permissions", summary="当前登录用户权限", response_model=Result[UserPermissionsOut])
@@ -108,7 +110,7 @@ async def login(
     if settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
         raise HTTPException(status_code=403, detail="邮箱未验证，请先完成邮箱验证")
     token_out = await token_service.issue_tokens(str(user.id), "admin", response, redis)
-    return result.ok(data=token_out, message="登录成功")
+    return result.ok(data=token_out, message="登录成功", translate=True)
 
 
 @router.post("/refresh", summary="刷新访问令牌", response_model=Result[TokenOut])
@@ -124,7 +126,7 @@ async def refresh(
     if not refresh_token:
         raise HTTPException(status_code=401, detail="未提供刷新令牌")
     token_out = await token_service.rotate_refresh_token(refresh_token, response, redis)
-    return result.ok(data=token_out, message="令牌已刷新")
+    return result.ok(data=token_out, message="令牌已刷新", translate=True)
 
 
 @router.post("/logout", summary="登出并撤销令牌", response_model=Result[None])
@@ -141,7 +143,7 @@ async def logout(
     # path 需与写入时一致，否则浏览器删不掉 Cookie
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
-    return result.ok(message="已退出登录")
+    return result.ok(message="已退出登录", translate=True)
 
 
 @router.post("/change-password", summary="修改当前登录用户密码", response_model=Result[None])
@@ -169,4 +171,4 @@ async def change_password(
         target_id=str(current_user.id),
         ip=audit_service.client_ip(request),
     )
-    return result.ok(message="密码已修改，请重新登录")
+    return result.ok(message="密码已修改，请重新登录", translate=True)

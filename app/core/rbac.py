@@ -1,3 +1,5 @@
+import json
+
 from fastapi import Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,7 +23,9 @@ async def assert_permissions(
     if require_all:
         missing = [c for c in codes if c not in perm_codes]
         if missing:
-            raise HTTPException(status_code=403, detail=f"权限不足，缺少：{', '.join(missing)}")
+            # 文案模板与参数分离，交由异常处理层翻译后插值（直接拼好会失去翻译能力）
+            detail = "权限不足，缺少：{missing}|" + json.dumps({"missing": ", ".join(missing)})
+            raise HTTPException(status_code=403, detail=detail)
     else:
         if not any(c in perm_codes for c in codes):
             raise HTTPException(status_code=403, detail="权限不足")

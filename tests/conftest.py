@@ -151,6 +151,17 @@ def rate_limit_memory_storage(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def disable_i18n(monkeypatch: pytest.MonkeyPatch):
+    """默认关闭 i18n 插件：多数用例断言的是中文原文。
+
+    开发者本机可能为了调试导出 ENABLE_I18N=true，不隔离会让这些用例随环境
+    变化而红/绿不定；需要验证翻译的用例自行在 fixture 里打开。
+    """
+    monkeypatch.setattr(settings, "ENABLE_I18N", False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_redis(monkeypatch: pytest.MonkeyPatch):
     """用 FakeRedis 替换 lifespan 中注入的 Redis 客户端，避免测试连接真实 Redis。"""
     fake_redis.reset()

@@ -40,7 +40,8 @@
 │   ├── models/              # SQLAlchemy ORM 模型（__init__.py 统一导入供 Alembic 发现）
 │   ├── schemas/             # Pydantic 请求/响应模型
 │   └── plugins/             # 可插拔能力，每个模块实现 setup(app)，按配置开关挂载
-│       ├── __init__.py      # setup_plugins(app)：request_id / rate_limit / metrics
+│       ├── __init__.py      # setup_plugins(app)：request_id / rate_limit / metrics / i18n
+│       ├── i18n.py          # 国际化：语种解析 + 词条表 + /api/v1/i18n 接口
 │       └── cache.py         # Redis 缓存装饰器 @cached(prefix, ttl)（始终可用，不是开关插件）
 ├── frontend/                # Vue 3 + Vite + TS 前端
 │   ├── src/api/             # axios 封装（请求带 Bearer token，响应解包 Result，401 跳登录）
@@ -101,6 +102,8 @@
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | slowapi 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件 + 日志串联插件 |
+| `ENABLE_I18N` | `true` | 国际化插件开关：按请求解析语种并翻译统一响应文案（详见「国际化」章节） |
+| `I18N_LOCALES` / `I18N_DEFAULT_LOCALE` | `zh-CN,en-US` / `zh-CN` | 支持的语种与默认语种 |
 | `ENABLE_MEMBER` | `true` | 会员（C 端用户）模块开关，关闭后 `/api/v1/member` 路由不注册（模型与表结构保留） |
 | `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA（API 路由优先匹配） |
 
@@ -209,6 +212,20 @@ docker compose -f docker-compose.prod.yml exec fastapi_app alembic upgrade head 
 Dockerfile：多阶段构建——`node:22-alpine` 阶段 `npm ci && npm run build` 产出前端 dist，`python:3.12-slim` + uv 阶段 `uv sync --frozen --no-dev` 并复制 dist（由后端托管）；非 root 用户运行，HEALTHCHECK 打 `/health`，启动命令 `fastapi run app/main.py`。
 
 CI（GitHub Actions，push main 或 PR）：`uv sync --frozen` → `ruff check` + `ruff format --check` → `mypy app tests` → `pytest --cov=app --cov-fail-under=82` → 前端 `npm ci && npm run build` → `docker build`。依赖版本由 renovate 自动跟踪（`renovate.json`）。
+
+## 国际化（i18n 插件）
+
+`app/plugins/i18n.py`，由 `ENABLE_I18N` 开关控制（默认开启；关闭时行为与未集成完全一致，中文环境返回内容逐字不变）。
+
+- **词条键就是中文原文**（如 `"邮箱或密码错误"`）。这样业务代码 `raise HTTPException(detail="...")` 的写法不变，中文环境返回内容逐字不变；新增语种只需在 `CATALOGS` 里补一份映射。
+- **语种解析顺序**：`?locale=` → `Accept-Language`（按 q 权重）→ `I18N_DEFAULT_LOCALE`；解析结果写入 `ContextVar` 并回写 `Content-Language` 响应头，请求结束后清理（连接复用不会串味）。
+- **翻译链路**：`app/core/exceptions.py` 的异常处理器统一走 `_t()`；成功文案需显式 `result.ok(..., translate=True)`（默认不翻译，避免给所有接口加开销）。缺词条、翻译异常一律回退中文原文。
+- **带运行时数值的文案不要先拼好**：`f"请 {minutes} 分钟后重试"` 一旦拼成字符串就再也匹配不上词条表里的模板，切语言时永远回中文。约定写成 `detail="请 {minutes} 分钟后重试|" + json.dumps({"minutes": minutes})`，由 `translate_exception_detail()` 拆出参数后再插值（例：`app/login_guard.py`、`app/core/rbac.py`）。
+- **接口**：`GET /api/v1/i18n/locales`（支持语种）、`GET /api/v1/i18n/messages?locale=en-US`（完整词条）。
+- **前端**：`frontend/src/plugins/i18n/`（与后端同源的扁平词条 + `translate()` + 语言切换，未引 vue-i18n）。启动时会调 `syncFromBackend()` 用后端词条覆盖本地；插件未启用时接口 404，静默回退本地词条（已在 `api/request.ts` 的 `SILENT_404_PATHS` 登记，不弹错误提示）。
+- **`api/request.ts` 的请求拦截器会显式下发 `Accept-Language: <当前语种>`**，保证后端返回的 `message` 与界面语种一致（不写 header 就会跟着浏览器语言走，切了界面语言后端仍是英文/中文不一）。
+- 前端词条只维护 `locales/en-US.ts` 一份，中文词条 `locales/zh-CN.ts` 由其键推导（键即中文原文），避免两边漏同步露键名。
+- 新增可见文案时：先写中文原文，再在 `CATALOGS['en-US']` 与前端 `locales/en-US.ts` 补译文。
 
 ## 安全注意事项
 

@@ -2,6 +2,7 @@
 import { listAuditLogs } from '../api/audit'
 import type { AuditLog, AuditLogParams } from '../api/audit'
 import { formatTime, toUtcIso } from '../utils/datetime'
+import { translate as t } from '../plugins/i18n'
 
 const loading = ref(false)
 const logs = ref<AuditLog[]>([])
@@ -36,7 +37,7 @@ function actionTagType(value: string): TagType {
 }
 
 function formatDetail(detail: string | null): string {
-  if (!detail) return '无'
+  if (!detail) return t('无')
   try {
     return JSON.stringify(JSON.parse(detail), null, 2)
   } catch {
@@ -129,73 +130,75 @@ onMounted(loadLogs)
     <el-card class="admin-card" shadow="never">
       <template #header>
         <div class="admin-toolbar">
-          <span class="admin-toolbar__title">审计日志</span>
+          <span class="admin-toolbar__title">{{ t('审计日志') }}</span>
           <div class="admin-toolbar__actions">
-            <el-button @click="loadLogs">刷新</el-button>
+            <el-button @click="loadLogs">{{ t('刷新') }}</el-button>
           </div>
         </div>
       </template>
 
       <el-form class="filters" :inline="true" @submit.prevent="onSearch">
-        <el-form-item label="动作">
+        <el-form-item :label="t('动作')">
           <el-select
             v-model="action"
             filterable
             clearable
             allow-create
             default-first-option
-            placeholder="全部动作"
+            :placeholder="t('全部动作')"
             style="width: 220px"
           >
             <el-option v-for="item in actionOptions" :key="item" :label="item" :value="item" />
           </el-select>
         </el-form-item>
-        <el-form-item label="操作者 ID">
-          <el-input-number v-model="actorId" :min="1" :controls="false" placeholder="不限" />
+        <el-form-item :label="t('操作者 ID')">
+          <el-input-number v-model="actorId" :min="1" :controls="false" :placeholder="t('不限')" />
         </el-form-item>
-        <el-form-item label="时间范围">
+        <el-form-item :label="t('时间范围')">
           <el-date-picker
             v-model="timeRange"
             type="datetimerange"
-            range-separator="至"
-            start-placeholder="开始时间"
-            end-placeholder="结束时间"
+            :range-separator="t('至')"
+            :start-placeholder="t('开始时间')"
+            :end-placeholder="t('结束时间')"
           />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="onSearch">查询</el-button>
-          <el-button @click="onReset">重置</el-button>
+          <el-button type="primary" @click="onSearch">{{ t('查询') }}</el-button>
+          <el-button @click="onReset">{{ t('重置') }}</el-button>
         </el-form-item>
       </el-form>
 
       <el-table v-loading="loading" :data="logs" border stripe>
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column label="时间" width="180">
+        <el-table-column :label="t('时间')" width="180">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="动作" width="180">
+        <el-table-column :label="t('动作')" width="180">
           <template #default="{ row }">
             <el-tag :type="actionTagType(row.action)" size="small">{{ row.action }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作者" width="130">
+        <el-table-column :label="t('操作者')" width="130">
           <template #default="{ row }">{{ actorLabel(row) }}</template>
         </el-table-column>
-        <el-table-column label="操作对象" min-width="170">
+        <el-table-column :label="t('操作对象')" min-width="170">
           <template #default="{ row }">
             <span>{{ row.target_type }}</span>
             <span class="admin-muted"> · {{ row.target_id ?? '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="ip" label="来源 IP" width="140">
+        <el-table-column prop="ip" :label="t('来源 IP')" width="140">
           <template #default="{ row }">{{ row.ip ?? '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="100" align="center" fixed="right">
+        <el-table-column :label="t('操作')" width="100" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" :disabled="!row.detail" @click="openDetail(row)">详情</el-button>
+            <el-button size="small" :disabled="!row.detail" @click="openDetail(row)">
+              {{ t('详情') }}
+            </el-button>
           </template>
         </el-table-column>
-        <template #empty>暂无审计日志</template>
+        <template #empty>{{ t('暂无审计日志') }}</template>
       </el-table>
 
       <div class="admin-pager">
@@ -212,18 +215,20 @@ onMounted(loadLogs)
       </div>
     </el-card>
 
-    <el-drawer v-model="detailVisible" title="日志详情" size="420px">
+    <el-drawer v-model="detailVisible" :title="t('日志详情')" size="420px">
       <el-descriptions v-if="detailRow" :column="1" border>
-        <el-descriptions-item label="日志 ID">{{ detailRow.id }}</el-descriptions-item>
-        <el-descriptions-item label="时间">{{ formatTime(detailRow.created_at) }}</el-descriptions-item>
-        <el-descriptions-item label="动作">{{ detailRow.action }}</el-descriptions-item>
-        <el-descriptions-item label="操作者">{{ actorLabel(detailRow) }}</el-descriptions-item>
-        <el-descriptions-item label="操作对象">
+        <el-descriptions-item :label="t('日志 ID')">{{ detailRow.id }}</el-descriptions-item>
+        <el-descriptions-item :label="t('时间')">
+          {{ formatTime(detailRow.created_at) }}
+        </el-descriptions-item>
+        <el-descriptions-item :label="t('动作')">{{ detailRow.action }}</el-descriptions-item>
+        <el-descriptions-item :label="t('操作者')">{{ actorLabel(detailRow) }}</el-descriptions-item>
+        <el-descriptions-item :label="t('操作对象')">
           {{ detailRow.target_type }} · {{ detailRow.target_id ?? '-' }}
         </el-descriptions-item>
-        <el-descriptions-item label="来源 IP">{{ detailRow.ip ?? '-' }}</el-descriptions-item>
+        <el-descriptions-item :label="t('来源 IP')">{{ detailRow.ip ?? '-' }}</el-descriptions-item>
       </el-descriptions>
-      <h4 class="detail-title">变更要点</h4>
+      <h4 class="detail-title">{{ t('变更要点') }}</h4>
       <pre class="detail-body">{{ formatDetail(detailRow?.detail ?? null) }}</pre>
     </el-drawer>
   </div>

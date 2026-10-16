@@ -3,6 +3,8 @@ import type { AxiosRequestConfig } from 'axios'
 import { ElMessage } from 'element-plus'
 import type { Router } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+// i18n 插件：请求带上当前语种，后端（开启 i18n 插件后）按此返回对应语言的 message
+import { currentLocale, translate } from '../plugins/i18n'
 
 // 后端统一响应结构：{"code": 200, "data": ..., "message": "..."}
 export interface ApiResult<T = unknown> {
@@ -38,14 +40,23 @@ const request = axios.create({
 // bootstrap 自身失败（如已初始化返回 409）不应触发静默刷新
 const NO_RETRY_PATHS = ['/api/v1/auth/refresh', '/api/v1/auth/login', '/api/v1/auth/bootstrap']
 
+// 可选能力的探测接口：404 表示插件未启用，属正常分支，不该弹错误提示
+const SILENT_404_PATHS = ['/api/v1/i18n/']
+
 function isNoRetryPath(url?: string): boolean {
   return !!url && NO_RETRY_PATHS.some((p) => url.includes(p))
+}
+
+function isSilent404Path(url?: string): boolean {
+  return !!url && SILENT_404_PATHS.some((p) => url.includes(p))
 }
 
 // 请求拦截器：不再注入 Authorization（令牌在 HttpOnly cookie 中），
 // 统一携带 X-Requested-With，后端据此放行 cookie 鉴权的写请求
 request.interceptors.request.use((config) => {
   config.headers['X-Requested-With'] = 'XMLHttpRequest'
+  // 显式覆盖浏览器默认语言，保证后端返回的 message 与界面语种一致
+  config.headers['Accept-Language'] = currentLocale.value
   return config
 })
 
@@ -61,7 +72,7 @@ function rawRefresh(): Promise<void> {
     .then((res) => {
       const body = res.data as ApiResult
       if (res.status !== 200 || !body || body.code !== 200) {
-        throw new Error(body?.message || '会话已过期，请重新登录')
+        throw new Error(body?.message || translate('会话已过期，请重新登录'))
       }
     })
 }
@@ -97,7 +108,7 @@ async function handleUnauthorized(
   try {
     await refreshPromise
   } catch {
-    clearSessionAndRedirect('登录已过期，请重新登录')
+    clearSessionAndRedirect(translate('登录已过期，请重新登录'))
     const authError = new Error(message) as AuthError
     authError.isAuthError = true
     throw authError
@@ -112,12 +123,16 @@ request.interceptors.response.use(
     if (response.status === 200 && body && body.code === 200) {
       return body as never
     }
-    ElMessage.error(body?.message || '请求失败')
-    return Promise.reject(new Error(body?.message || '请求失败'))
+    const fallback = translate('请求失败')
+    ElMessage.error(body?.message || fallback)
+    return Promise.reject(new Error(body?.message || fallback))
   },
   (error: AxiosError<ApiResult>) => {
     const status = error.response?.status
-    const message = error.response?.data?.message || error.message || '网络异常'
+    const message = error.response?.data?.message || error.message || translate('网络异常')
+    if (status === 404 && isSilent404Path(error.config?.url)) {
+      return Promise.reject(error)
+    }
     if (status !== 401) {
       ElMessage.error(message)
       return Promise.reject(error)
@@ -127,7 +142,7 @@ request.interceptors.response.use(
     }
     // refresh 失败时清空登录态并跳转；login 失败停留在当前页（静默，登录页自行展示错误）
     if (error.config?.url?.includes('/api/v1/auth/refresh')) {
-      clearSessionAndRedirect('登录已过期，请重新登录')
+      clearSessionAndRedirect(translate('登录已过期，请重新登录'))
     }
     const authError = new Error(message) as AuthError
     authError.isAuthError = true

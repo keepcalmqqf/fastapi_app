@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -124,8 +125,15 @@ class LoginGuard:
 
 
 def _locked_error(seconds: int) -> Exception:
+    """锁定提示。
+
+    数值不直接拼进文案：拼好之后就匹配不上词条表里的模板，翻译会永远失效。
+    这里用「中文模板|参数」的写法，由异常处理层先翻译再插值（见
+    app/plugins/i18n.py::translate_exception_detail）。
+    """
     minutes = max(1, round(seconds / 60))
-    return HTTPException(status_code=429, detail=f"登录失败次数过多，请 {minutes} 分钟后重试")
+    detail = "登录失败次数过多，请 {minutes} 分钟后重试|" + json.dumps({"minutes": minutes})
+    return HTTPException(status_code=429, detail=detail)
 
 
 login_guard = LoginGuard()

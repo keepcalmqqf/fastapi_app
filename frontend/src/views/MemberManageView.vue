@@ -2,6 +2,7 @@
 import { listMembers } from '../api/member'
 import type { Member } from '../api/member'
 import { formatTime } from '../utils/datetime'
+import { translate as t } from '../plugins/i18n'
 
 const loading = ref(false)
 const members = ref<Member[]>([])
@@ -39,9 +40,9 @@ onMounted(loadMembers)
     <el-card class="admin-card" shadow="never">
       <template #header>
         <div class="admin-toolbar">
-          <span class="admin-toolbar__title">会员管理</span>
+          <span class="admin-toolbar__title">{{ t('会员管理') }}</span>
           <div class="admin-toolbar__actions">
-            <el-button @click="loadMembers">刷新</el-button>
+            <el-button @click="loadMembers">{{ t('刷新') }}</el-button>
           </div>
         </div>
       </template>
@@ -50,27 +51,27 @@ onMounted(loadMembers)
         class="tip"
         type="info"
         :closable="false"
-        title="会员资料由会员本人自助维护，当前后端仅提供后台查看能力。"
+        :title="t('会员资料由会员本人自助维护，当前后端仅提供后台查看能力。')"
       />
 
       <el-table v-loading="loading" :data="members" border stripe>
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="nickname" label="昵称" min-width="120" />
-        <el-table-column prop="email" label="邮箱" min-width="200" />
-        <el-table-column label="状态" width="90" align="center">
+        <el-table-column prop="nickname" :label="t('昵称')" min-width="120" />
+        <el-table-column prop="email" :label="t('邮箱')" min-width="200" />
+        <el-table-column :label="t('状态')" width="90" align="center">
           <template #default="{ row }">
             <el-tag :type="row.is_active ? 'success' : 'danger'">
-              {{ row.is_active ? '启用' : '禁用' }}
+              {{ row.is_active ? t('启用') : t('禁用') }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="注册时间" width="180">
+        <el-table-column :label="t('注册时间')" width="180">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="更新时间" width="180">
+        <el-table-column :label="t('更新时间')" width="180">
           <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
         </el-table-column>
-        <template #empty>暂无会员</template>
+        <template #empty>{{ t('暂无会员') }}</template>
       </el-table>
 
       <div class="admin-pager">

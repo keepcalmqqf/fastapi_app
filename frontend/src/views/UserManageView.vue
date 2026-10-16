@@ -8,6 +8,7 @@ import type { Role } from '../api/rbac'
 import { useAuthStore } from '../stores/auth'
 import { usePermissionStore } from '../stores/permission'
 import { formatTime } from '../utils/datetime'
+import { translate as t } from '../plugins/i18n'
 
 const authStore = useAuthStore()
 // 当前登录用户是否为超级管理员：后端规定仅超级管理员可分配 super_admin 角色，
@@ -61,12 +62,12 @@ const editFormRef = ref<FormInstance>()
 const editingId = ref<number | null>(null)
 const editForm = reactive({ name: '', is_active: true })
 
-const editRules: FormRules = {
+const editRules = computed<FormRules>(() => ({
   name: [
-    { required: true, message: '请输入昵称', trigger: 'blur' },
-    { min: 2, max: 32, message: '昵称长度为 2-32 位', trigger: 'blur' },
+    { required: true, message: t('请输入昵称'), trigger: 'blur' },
+    { min: 2, max: 32, message: t('昵称长度为 2-32 位'), trigger: 'blur' },
   ],
-}
+}))
 
 // 添加用户对话框
 const createVisible = ref(false)
@@ -75,22 +76,22 @@ const createFormRef = ref<FormInstance>()
 const createForm = reactive({ name: '', email: '', password: '', is_active: true })
 
 // 校验规则与后端 CreateUser 对齐：昵称 2-32，邮箱格式，密码 8-64 且必须含字母和数字
-const createRules: FormRules = {
+const createRules = computed<FormRules>(() => ({
   name: [
-    { required: true, message: '请输入昵称', trigger: 'blur' },
-    { min: 2, max: 32, message: '昵称长度为 2-32 位', trigger: 'blur' },
+    { required: true, message: t('请输入昵称'), trigger: 'blur' },
+    { min: 2, max: 32, message: t('昵称长度为 2-32 位'), trigger: 'blur' },
   ],
   email: [
-    { required: true, message: '请输入邮箱', trigger: 'blur' },
-    { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
+    { required: true, message: t('请输入邮箱'), trigger: 'blur' },
+    { type: 'email', message: t('邮箱格式不正确'), trigger: 'blur' },
   ],
   password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 8, max: 64, message: '密码长度为 8-64 位', trigger: 'blur' },
+    { required: true, message: t('请输入密码'), trigger: 'blur' },
+    { min: 8, max: 64, message: t('密码长度为 8-64 位'), trigger: 'blur' },
     {
       validator: (_rule, value, callback) => {
         if (value && !(/\p{L}/u.test(value) && /\d/.test(value))) {
-          callback(new Error('密码必须同时包含字母和数字'))
+          callback(new Error(t('密码必须同时包含字母和数字')))
         } else {
           callback()
         }
@@ -98,7 +99,7 @@ const createRules: FormRules = {
       trigger: 'blur',
     },
   ],
-}
+}))
 
 function openCreate() {
   createForm.name = ''
@@ -119,7 +120,7 @@ async function onCreate() {
       password: createForm.password,
       is_active: createForm.is_active,
     })
-    ElMessage.success('添加成功')
+    ElMessage.success(t('添加成功'))
     createVisible.value = false
     // 列表按 id 升序，新用户在末页，跳到最后一页以便看到刚添加的用户
     const lastPage = Math.max(1, Math.ceil((total.value + 1) / pageSize.value))
@@ -146,7 +147,7 @@ async function onSave() {
       name: editForm.name.trim(),
       is_active: editForm.is_active,
     })
-    ElMessage.success('更新成功')
+    ElMessage.success(t('更新成功'))
     editVisible.value = false
     loadUsers()
   } finally {
@@ -157,15 +158,15 @@ async function onSave() {
 async function onDelete(row: AdminUser) {
   try {
     await ElMessageBox.confirm(
-      `确定删除用户「${row.name ?? row.email}」吗？该操作为软删除。`,
-      '删除确认',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+      t('确定删除用户「{name}」吗？该操作为软删除。', { name: row.name ?? row.email }),
+      t('删除确认'),
+      { type: 'warning', confirmButtonText: t('删除'), cancelButtonText: t('取消') },
     )
   } catch {
     return
   }
   await deleteUser(row.id)
-  ElMessage.success('删除成功')
+  ElMessage.success(t('删除成功'))
   // 删除当前页最后一条时回退一页，避免停在空页
   if (users.value.length === 1 && page.value > 1) {
     page.value -= 1
@@ -202,7 +203,7 @@ async function onSaveRole() {
       (c) => !(c === 'super_admin' && !isSuperAdmin.value),
     )
     await setUserRoles(roleUserId.value, payload)
-    ElMessage.success('角色已更新')
+    ElMessage.success(t('角色已更新'))
     roleVisible.value = false
     loadUsers()
   } catch {
@@ -223,34 +224,34 @@ onMounted(() => {
     <el-card class="admin-card" shadow="never">
       <template #header>
         <div class="admin-toolbar">
-          <span class="admin-toolbar__title">用户管理</span>
+          <span class="admin-toolbar__title">{{ t('用户管理') }}</span>
           <div class="admin-toolbar__actions">
-            <el-button type="primary" @click="openCreate">添加用户</el-button>
-            <el-button @click="loadUsers">刷新</el-button>
+            <el-button type="primary" @click="openCreate">{{ t('添加用户') }}</el-button>
+            <el-button @click="loadUsers">{{ t('刷新') }}</el-button>
           </div>
         </div>
       </template>
 
       <el-table v-loading="loading" :data="users" border stripe>
         <el-table-column prop="id" label="ID" width="80" />
-        <el-table-column prop="name" label="昵称" min-width="120" />
-        <el-table-column prop="email" label="邮箱" min-width="200" />
-        <el-table-column label="状态" width="90" align="center">
+        <el-table-column prop="name" :label="t('昵称')" min-width="120" />
+        <el-table-column prop="email" :label="t('邮箱')" min-width="200" />
+        <el-table-column :label="t('状态')" width="90" align="center">
           <template #default="{ row }">
             <el-tag :type="row.is_active ? 'success' : 'danger'">
-              {{ row.is_active ? '启用' : '禁用' }}
+              {{ row.is_active ? t('启用') : t('禁用') }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="180">
+        <el-table-column :label="t('创建时间')" width="180">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="260" align="center" fixed="right">
+        <el-table-column :label="t('操作')" width="260" align="center" fixed="right">
           <template #default="{ row }">
             <el-button size="small" v-permission="'user:write'" @click="openAssignRole(row)">
-              分配角色
+              {{ t('分配角色') }}
             </el-button>
-            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" @click="openEdit(row)">{{ t('编辑') }}</el-button>
             <el-button
               size="small"
               type="danger"
@@ -258,11 +259,11 @@ onMounted(() => {
               :disabled="row.id === authStore.user?.id"
               @click="onDelete(row)"
             >
-              删除
+              {{ t('删除') }}
             </el-button>
           </template>
         </el-table-column>
-        <template #empty>暂无用户</template>
+        <template #empty>{{ t('暂无用户') }}</template>
       </el-table>
 
       <div class="admin-pager">
@@ -279,60 +280,64 @@ onMounted(() => {
       </div>
     </el-card>
 
-    <el-dialog v-model="editVisible" title="编辑用户" width="420px">
+    <el-dialog v-model="editVisible" :title="t('编辑用户')" width="420px">
       <el-form ref="editFormRef" :model="editForm" :rules="editRules" label-width="70px">
-        <el-form-item label="昵称" prop="name">
-          <el-input v-model="editForm.name" maxlength="32" placeholder="2-32 位昵称" />
+        <el-form-item :label="t('昵称')" prop="name">
+          <el-input v-model="editForm.name" maxlength="32" :placeholder="t('2-32 位昵称')" />
         </el-form-item>
-        <el-form-item label="状态">
+        <el-form-item :label="t('状态')">
           <el-switch
             v-model="editForm.is_active"
-            active-text="启用"
-            inactive-text="禁用"
+            :active-text="t('启用')"
+            :inactive-text="t('禁用')"
             inline-prompt
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="editVisible = false">取消</el-button>
-        <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
+        <el-button @click="editVisible = false">{{ t('取消') }}</el-button>
+        <el-button type="primary" :loading="saving" @click="onSave">{{ t('保存') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="createVisible" title="添加用户" width="420px">
+    <el-dialog v-model="createVisible" :title="t('添加用户')" width="420px">
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="70px">
-        <el-form-item label="昵称" prop="name">
-          <el-input v-model="createForm.name" maxlength="32" placeholder="2-32 位昵称" />
+        <el-form-item :label="t('昵称')" prop="name">
+          <el-input v-model="createForm.name" maxlength="32" :placeholder="t('2-32 位昵称')" />
         </el-form-item>
-        <el-form-item label="邮箱" prop="email">
-          <el-input v-model="createForm.email" placeholder="登录邮箱" />
+        <el-form-item :label="t('邮箱')" prop="email">
+          <el-input v-model="createForm.email" :placeholder="t('登录邮箱')" />
         </el-form-item>
-        <el-form-item label="密码" prop="password">
+        <el-form-item :label="t('密码')" prop="password">
           <el-input
             v-model="createForm.password"
             type="password"
             show-password
             maxlength="64"
-            placeholder="8-64 位，需包含字母和数字"
+            :placeholder="t('8-64 位，需包含字母和数字')"
           />
         </el-form-item>
-        <el-form-item label="状态">
+        <el-form-item :label="t('状态')">
           <el-switch
             v-model="createForm.is_active"
-            active-text="启用"
-            inactive-text="禁用"
+            :active-text="t('启用')"
+            :inactive-text="t('禁用')"
             inline-prompt
           />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createVisible = false">取消</el-button>
-        <el-button type="primary" :loading="savingCreate" @click="onCreate">确定</el-button>
+        <el-button @click="createVisible = false">{{ t('取消') }}</el-button>
+        <el-button type="primary" :loading="savingCreate" @click="onCreate">
+          {{ t('确定') }}
+        </el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="roleVisible" title="分配角色" width="460px">
-      <div class="assign-role__title">为用户「{{ roleUserName }}」分配角色（整组替换）</div>
+    <el-dialog v-model="roleVisible" :title="t('分配角色')" width="460px">
+      <div class="assign-role__title">
+        {{ t('为用户「{name}」分配角色（整组替换）', { name: roleUserName }) }}
+      </div>
       <el-checkbox-group v-model="checkedRoles">
         <el-checkbox
           v-for="r in allRoles"
@@ -346,8 +351,10 @@ onMounted(() => {
         </el-checkbox>
       </el-checkbox-group>
       <template #footer>
-        <el-button @click="roleVisible = false">取消</el-button>
-        <el-button type="primary" :loading="savingRole" @click="onSaveRole">保存</el-button>
+        <el-button @click="roleVisible = false">{{ t('取消') }}</el-button>
+        <el-button type="primary" :loading="savingRole" @click="onSaveRole">
+          {{ t('保存') }}
+        </el-button>
       </template>
     </el-dialog>
   </div>

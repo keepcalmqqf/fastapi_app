@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
+// i18n 插件：中文原文即键，切语种后模板内的文案与校验提示一起刷新
+import { translate as t } from '../plugins/i18n'
 
 const router = useRouter()
 const route = useRoute()
@@ -21,16 +23,17 @@ onMounted(async () => {
   canBootstrap.value = authStore.needsBootstrap === true
 })
 
-const rules: FormRules = {
+// 校验提示也走词条：用 computed 而非常量，切换语种后重新校验即显示新语言
+const rules = computed<FormRules>(() => ({
   email: [
-    { required: true, message: '请输入邮箱', trigger: 'blur' },
-    { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
+    { required: true, message: t('请输入邮箱'), trigger: 'blur' },
+    { type: 'email', message: t('邮箱格式不正确'), trigger: 'blur' },
   ],
   password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 8, max: 64, message: '长度需为 8-64 位', trigger: 'blur' },
+    { required: true, message: t('请输入密码'), trigger: 'blur' },
+    { min: 8, max: 64, message: t('长度需为 8-64 位'), trigger: 'blur' },
   ],
-}
+}))
 
 async function onSubmit() {
   if (!formRef.value) return
@@ -39,14 +42,14 @@ async function onSubmit() {
     loading.value = true
     try {
       await authStore.login(form.email, form.password)
-      ElMessage.success('登录成功')
+      ElMessage.success(t('登录成功'))
       // 支持 401 跳转时携带的 redirect 回跳参数
       const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
       router.push(redirect)
     } catch (err) {
       // 登录失败（如邮箱或密码错误）：响应拦截器已将后端 message 带出，
       // 这里捕获并展示，避免 401 被 finally 静默吞掉
-      const msg = err instanceof Error ? err.message : '登录失败，请重试'
+      const msg = err instanceof Error ? err.message : t('登录失败，请重试')
       ElMessage.error(msg)
     } finally {
       loading.value = false
@@ -60,25 +63,25 @@ async function onSubmit() {
     <el-card class="login-card">
       <h2 class="title">FastAPI 全栈脚手架</h2>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
-        <el-form-item label="邮箱" prop="email">
-          <el-input v-model="form.email" placeholder="请输入邮箱" clearable />
+        <el-form-item :label="t('邮箱')" prop="email">
+          <el-input v-model="form.email" :placeholder="t('请输入邮箱')" clearable />
         </el-form-item>
-        <el-form-item label="密码" prop="password">
+        <el-form-item :label="t('密码')" prop="password">
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="请输入密码"
+            :placeholder="t('请输入密码')"
             show-password
             @keyup.enter="onSubmit"
           />
         </el-form-item>
         <el-button class="submit-btn" type="primary" :loading="loading" @click="onSubmit">
-          登录
+          {{ t('登录') }}
         </el-button>
       </el-form>
       <div v-if="canBootstrap" class="footer-link">
-        尚未初始化？
-        <router-link to="/register">创建首个管理员</router-link>
+        {{ t('尚未初始化？') }}
+        <router-link to="/register">{{ t('创建首个管理员') }}</router-link>
       </div>
     </el-card>
   </div>

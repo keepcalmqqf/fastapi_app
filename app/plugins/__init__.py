@@ -24,3 +24,8 @@ def setup_plugins(app: FastAPI) -> None:
 
         metrics.setup(app)
         logger.info("插件已启用: metrics (/metrics)")
+    if settings.ENABLE_I18N:
+        from app.plugins import i18n
+
+        i18n.setup(app)
+        logger.info("插件已启用: i18n (/api/v1/i18n)")

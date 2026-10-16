@@ -1,6 +1,5 @@
 // createApp / createPinia 由 unplugin-auto-import 自动导入
 import ElementPlus from 'element-plus'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import * as ElementPlusIcons from '@element-plus/icons-vue'
 import 'element-plus/dist/index.css'
 // 暗色变量：配合 src/composables/useAppTheme.ts 在 <html> 上挂 dark 类生效
@@ -11,6 +10,9 @@ import App from './App.vue'
 import router from './router'
 import { setupRequest } from './api/request'
 import { registerPermissionDirectives } from './directives/permission'
+// i18n 插件：组件库语言随当前语种切换，词条优先取后端（插件未启用时用本地词条）
+import { elementLocale } from './plugins/i18n/element'
+import { syncFromBackend } from './plugins/i18n/sync'
 
 const app = createApp(App)
 
@@ -26,6 +28,9 @@ registerPermissionDirectives(app)
 
 app.use(createPinia())
 app.use(router)
-app.use(ElementPlus, { locale: zhCn })
+app.use(ElementPlus, { locale: elementLocale.value })
+
+// 拉取后端词条（i18n 插件未启用时接口 404，静默回退本地词条）
+void syncFromBackend()
 
 app.mount('#app')

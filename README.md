@@ -204,6 +204,8 @@ curl -b cookie.jar -X POST http://127.0.0.1:8000/api/v1/user/ \
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | 限流插件 |
 | `RATE_LIMIT_STORAGE_URI` | 未设置（自动推导 Redis） | 限流计数存储；设为 `memory://` 强制退回进程内存，见下方说明 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
+| `ENABLE_I18N` | `true` | 国际化插件：按请求解析语种并翻译统一响应文案，详见 `AGENTS.md` |
+| `I18N_LOCALES` / `I18N_DEFAULT_LOCALE` | `zh-CN,en-US` / `zh-CN` | i18n 支持语种与默认语种 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件插件 |
 | `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA |
 

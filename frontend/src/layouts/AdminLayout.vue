@@ -3,6 +3,14 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 import { usePermissionStore } from '../stores/permission'
+// i18n 插件：词条默认取本地文件，后端开启 i18n 插件后会用接口返回的译文覆盖
+import {
+  localeLabels,
+  setLocale,
+  translate,
+  useI18n,
+} from '../plugins/i18n'
+import type { I18nLocale } from '../plugins/i18n'
 
 const route = useRoute()
 const router = useRouter()
@@ -18,6 +26,13 @@ const collapsed = useStorage('admin.sidebar.collapsed', false)
 // 侧边栏菜单直接由路由表生成，新增页面只需在 router 里加一条带 meta.title 的路由
 // 同时按权限过滤：用户缺少某菜单所需权限时，菜单项自动隐藏
 const permissionStore = usePermissionStore()
+
+// 语言切换：写回 localStorage，组件库语言由 App.vue 的 el-config-provider 下发
+const { locale: currentLocale, locales: supportedLocales } = useI18n()
+function onLocaleChange(value: string | number) {
+  setLocale(value as I18nLocale)
+}
+
 const menuItems = computed(() => {
   const root = router.options.routes.find((item) => item.path === '/')
   return (root?.children ?? []).filter((item) => {
@@ -40,16 +55,16 @@ const initial = computed(() => {
 
 async function onLogout() {
   try {
-    await ElMessageBox.confirm('确定退出登录吗？', '退出确认', {
+    await ElMessageBox.confirm(translate('确定退出登录吗？'), translate('退出确认'), {
       type: 'warning',
-      confirmButtonText: '退出',
-      cancelButtonText: '取消',
+      confirmButtonText: translate('退出'),
+      cancelButtonText: translate('取消'),
     })
   } catch {
     return
   }
   await authStore.logout()
-  ElMessage.success('已退出登录')
+  ElMessage.success(translate('已退出登录'))
   router.push({ name: 'login' })
 }
 
@@ -77,7 +92,7 @@ function onCommand(command: string) {
           <el-icon>
             <component :is="item.meta?.icon ?? 'Menu'" />
           </el-icon>
-          <template #title>{{ item.meta?.title }}</template>
+          <template #title>{{ translate(item.meta?.title ?? '') }}</template>
         </el-menu-item>
       </el-menu>
     </el-aside>
@@ -87,31 +102,60 @@ function onCommand(command: string) {
         <div class="admin-header__left">
           <el-button text :icon="collapsed ? 'Expand' : 'Fold'" @click="collapsed = !collapsed" />
           <el-breadcrumb separator="/">
-            <el-breadcrumb-item :to="{ name: 'dashboard' }">首页</el-breadcrumb-item>
+            <el-breadcrumb-item :to="{ name: 'dashboard' }">{{
+              translate('首页')
+            }}</el-breadcrumb-item>
             <el-breadcrumb-item v-for="crumb in breadcrumbs" :key="crumb">
-              {{ crumb }}
+              {{ translate(crumb) }}
             </el-breadcrumb-item>
           </el-breadcrumb>
         </div>
 
         <div class="admin-header__right">
-          <el-tag v-if="!online" type="danger" size="small" effect="dark">网络已断开</el-tag>
+          <el-tag v-if="!online" type="danger" size="small" effect="dark">{{
+            translate('网络已断开')
+          }}</el-tag>
 
-          <el-tooltip :content="isDark ? '切换为浅色' : '切换为深色'" placement="bottom">
+          <el-dropdown trigger="click" @command="onLocaleChange">
+            <el-button text :icon="'Notebook'">
+              {{ localeLabels[currentLocale] }}
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="item in supportedLocales"
+                  :key="item"
+                  :command="item"
+                  :disabled="item === currentLocale"
+                >
+                  {{ localeLabels[item] }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-tooltip
+            :content="isDark ? translate('切换为浅色') : translate('切换为深色')"
+            placement="bottom"
+          >
             <el-button text :icon="isDark ? 'Sunny' : 'Moon'" @click="toggleDark()" />
           </el-tooltip>
 
           <el-dropdown trigger="click" @command="onCommand">
             <span class="admin-user">
               <el-avatar :size="28" class="admin-user__avatar">{{ initial }}</el-avatar>
-              <span class="admin-user__name">{{ authStore.user?.name ?? '未登录' }}</span>
+              <span class="admin-user__name">
+                {{ authStore.user?.name ?? translate('未登录') }}
+              </span>
               <el-icon><ArrowDown /></el-icon>
             </span>
             <template #dropdown>
               <el-dropdown-menu>
                 <div class="admin-user__email">{{ authStore.user?.email ?? '-' }}</div>
-                <el-dropdown-item command="profile">个人资料</el-dropdown-item>
-                <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+                <el-dropdown-item command="profile">{{ translate('个人资料') }}</el-dropdown-item>
+                <el-dropdown-item command="logout" divided>{{
+                  translate('退出登录')
+                }}</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>

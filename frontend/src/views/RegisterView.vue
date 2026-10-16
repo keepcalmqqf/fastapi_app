@@ -2,6 +2,7 @@
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { bootstrapAdmin } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
+import { translate as t } from '../plugins/i18n'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -22,24 +23,24 @@ const form = reactive({
 // 与后端校验规则保持一致：name 2-32 字符，password 8-64 位且同时包含字母和数字
 const PASSWORD_PATTERN = /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/
 
-const rules: FormRules = {
+const rules = computed<FormRules>(() => ({
   name: [
-    { required: true, message: '请输入昵称', trigger: 'blur' },
-    { min: 2, max: 32, message: '长度需为 2-32 个字符', trigger: 'blur' },
+    { required: true, message: t('请输入昵称'), trigger: 'blur' },
+    { min: 2, max: 32, message: t('长度需为 2-32 个字符'), trigger: 'blur' },
   ],
   email: [
-    { required: true, message: '请输入邮箱', trigger: 'blur' },
-    { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
+    { required: true, message: t('请输入邮箱'), trigger: 'blur' },
+    { type: 'email', message: t('邮箱格式不正确'), trigger: 'blur' },
   ],
   password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
+    { required: true, message: t('请输入密码'), trigger: 'blur' },
     {
       pattern: PASSWORD_PATTERN,
-      message: '密码需为 8-64 位，且同时包含字母和数字',
+      message: t('密码需为 8-64 位，且同时包含字母和数字'),
       trigger: 'blur',
     },
   ],
-}
+}))
 
 async function onSubmit() {
   if (!formRef.value) return
@@ -50,7 +51,7 @@ async function onSubmit() {
       await bootstrapAdmin(form.name, form.email, form.password)
       // 注册不种 cookie，继续调登录建立会话后直达首页
       await authStore.login(form.email, form.password)
-      ElMessage.success('注册成功')
+      ElMessage.success(t('注册成功'))
       router.push('/')
     } catch {
       // 失败提示（如 401 注册已关闭 / 409 邮箱已存在）已由响应拦截器统一展示
@@ -64,30 +65,32 @@ async function onSubmit() {
 <template>
   <div class="register-page">
     <el-card class="register-card">
-      <h2 class="title">注册账号</h2>
-      <p class="hint">当前尚无管理员账号，本页用于初始化首个管理员；初始化完成后入口自动关闭。</p>
+      <h2 class="title">{{ t('注册账号') }}</h2>
+      <p class="hint">
+        {{ t('当前尚无管理员账号，本页用于初始化首个管理员；初始化完成后入口自动关闭。') }}
+      </p>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
-        <el-form-item label="昵称" prop="name">
-          <el-input v-model="form.name" maxlength="32" placeholder="2-32 个字符" clearable />
+        <el-form-item :label="t('昵称')" prop="name">
+          <el-input v-model="form.name" maxlength="32" :placeholder="t('2-32 个字符')" clearable />
         </el-form-item>
-        <el-form-item label="邮箱" prop="email">
-          <el-input v-model="form.email" placeholder="请输入邮箱" clearable />
+        <el-form-item :label="t('邮箱')" prop="email">
+          <el-input v-model="form.email" :placeholder="t('请输入邮箱')" clearable />
         </el-form-item>
-        <el-form-item label="密码" prop="password">
+        <el-form-item :label="t('密码')" prop="password">
           <el-input
             v-model="form.password"
             type="password"
-            placeholder="8-64 位，须包含字母和数字"
+            :placeholder="t('8-64 位，须包含字母和数字')"
             show-password
             @keyup.enter="onSubmit"
           />
         </el-form-item>
         <el-button class="submit-btn" type="primary" :loading="loading" @click="onSubmit">
-          注册
+          {{ t('注册') }}
         </el-button>
       </el-form>
       <div class="footer-link">
-        已有账号？<router-link to="/login">去登录</router-link>
+        {{ t('已有账号？') }}<router-link to="/login">{{ t('去登录') }}</router-link>
       </div>
     </el-card>
   </div>

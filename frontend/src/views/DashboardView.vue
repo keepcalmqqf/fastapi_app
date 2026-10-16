@@ -6,6 +6,7 @@ import { listUsers } from '../api/user'
 import { useAuthStore } from '../stores/auth'
 import { usePermissionStore } from '../stores/permission'
 import { formatTime } from '../utils/datetime'
+import { translate as t } from '../plugins/i18n'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -115,7 +116,7 @@ function actorLabel(row: AuditLog): string {
               <component :is="card.icon" />
             </el-icon>
             <div>
-              <div class="stat-card__label">{{ card.label }}</div>
+              <div class="stat-card__label">{{ t(card.label) }}</div>
               <div class="stat-card__value">{{ card.value }}</div>
             </div>
           </div>
@@ -129,7 +130,7 @@ function actorLabel(row: AuditLog): string {
               <UserFilled />
             </el-icon>
             <div>
-              <div class="stat-card__label">当前账号</div>
+              <div class="stat-card__label">{{ t('当前账号') }}</div>
               <div class="stat-card__value stat-card__value--sm">
                 {{ authStore.user?.name ?? '-' }}
               </div>
@@ -143,42 +144,42 @@ function actorLabel(row: AuditLog): string {
       <template #header>
         <div class="admin-toolbar">
           <span class="admin-toolbar__title">
-            最近操作日志
+            {{ t('最近操作日志') }}
             <span v-if="lastUpdated" class="admin-toolbar__time">
-              更新于 {{ formatTime(lastUpdated) }}
+              {{ t('更新于 {time}', { time: formatTime(lastUpdated) }) }}
             </span>
           </span>
           <div class="admin-toolbar__actions">
-            <el-button @click="loadOverview">刷新</el-button>
+            <el-button @click="loadOverview">{{ t('刷新') }}</el-button>
             <el-button type="primary" plain @click="router.push({ name: 'audit-logs' })">
-              查看全部
+              {{ t('查看全部') }}
             </el-button>
           </div>
         </div>
       </template>
 
       <el-table v-loading="loading" :data="recentLogs" border stripe>
-        <el-table-column label="时间" width="180">
+        <el-table-column :label="t('时间')" width="180">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="动作" min-width="160">
+        <el-table-column :label="t('动作')" min-width="160">
           <template #default="{ row }">
             <el-tag size="small" type="info">{{ row.action }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作者" width="120">
+        <el-table-column :label="t('操作者')" width="120">
           <template #default="{ row }">{{ actorLabel(row) }}</template>
         </el-table-column>
-        <el-table-column label="操作对象" min-width="160">
+        <el-table-column :label="t('操作对象')" min-width="160">
           <template #default="{ row }">
             <span>{{ row.target_type }}</span>
             <span class="admin-muted"> · {{ row.target_id ?? '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="ip" label="来源 IP" width="140">
+        <el-table-column prop="ip" :label="t('来源 IP')" width="140">
           <template #default="{ row }">{{ row.ip ?? '-' }}</template>
         </el-table-column>
-        <template #empty>暂无审计日志</template>
+        <template #empty>{{ t('暂无审计日志') }}</template>
       </el-table>
     </el-card>
   </div>
