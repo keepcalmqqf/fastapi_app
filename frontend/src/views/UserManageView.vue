@@ -6,9 +6,14 @@ import type { AdminUser } from '../api/user'
 import { listRoles, getUserRoles, setUserRoles } from '../api/rbac'
 import type { Role } from '../api/rbac'
 import { useAuthStore } from '../stores/auth'
+import { usePermissionStore } from '../stores/permission'
 import { formatTime } from '../utils/datetime'
 
 const authStore = useAuthStore()
+// 当前登录用户是否为超级管理员：后端规定仅超级管理员可分配 super_admin 角色，
+// 前端据此放开/禁用该高权选项的勾选（其余角色普通管理员即可分配）。
+const permissionStore = usePermissionStore()
+const isSuperAdmin = computed(() => permissionStore.isSuperAdmin)
 
 // 角色清单（分配角色对话框用）
 const allRoles = ref<Role[]>([])
@@ -192,10 +197,16 @@ async function onSaveRole() {
   if (roleUserId.value === null) return
   savingRole.value = true
   try {
-    await setUserRoles(roleUserId.value, checkedRoles.value)
+    // 非超级管理员不可分配 super_admin（后端同样拦截），提交前先过滤掉避免 403
+    const payload = checkedRoles.value.filter(
+      (c) => !(c === 'super_admin' && !isSuperAdmin.value),
+    )
+    await setUserRoles(roleUserId.value, payload)
     ElMessage.success('角色已更新')
     roleVisible.value = false
     loadUsers()
+  } catch {
+    // 请求失败已由响应拦截器统一提示，这里仅确保 loading 状态重置
   } finally {
     savingRole.value = false
   }
@@ -236,7 +247,7 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="操作" width="260" align="center" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" v-permission="'role:write'" @click="openAssignRole(row)">
+            <el-button size="small" v-permission="'user:write'" @click="openAssignRole(row)">
               分配角色
             </el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
@@ -328,7 +339,7 @@ onMounted(() => {
           :key="r.id"
           :value="r.code"
           class="assign-role__item"
-          :disabled="r.is_system"
+          :disabled="r.code === 'super_admin' && !isSuperAdmin"
         >
           {{ r.name }}
           <span class="assign-role__code">{{ r.code }}</span>
