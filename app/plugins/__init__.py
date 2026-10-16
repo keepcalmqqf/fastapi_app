@@ -29,3 +29,8 @@ def setup_plugins(app: FastAPI) -> None:
 
         i18n.setup(app)
         logger.info("插件已启用: i18n (/api/v1/i18n)")
+    if settings.ENABLE_WEBSOCKET:
+        from app.plugins import websocket
+
+        websocket.setup(app)
+        logger.info("插件已启用: websocket (%s)", settings.WEBSOCKET_PATH)

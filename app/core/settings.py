@@ -100,6 +100,16 @@ class Settings(BaseSettings):
     I18N_LOCALES: str = "zh-CN,en-US"
     I18N_DEFAULT_LOCALE: str = "zh-CN"
 
+    # WebSocket 实时通信插件：关闭时路由不注册，与未集成行为完全一致
+    ENABLE_WEBSOCKET: bool = False
+    # WebSocket 端点路径（必须以 / 开头，自动去除末尾斜杠）
+    WEBSOCKET_PATH: str = "/ws"
+    # 连接是否强制鉴权：关闭则允许匿名连接（仍走同一端点，仅不校验令牌）
+    WEBSOCKET_AUTH_REQUIRED: bool = True
+    # 单实例最大并发连接数；达上限后新连接以 1013（稍后重试）拒绝。
+    # 多实例部署需在前面挂 LB/网关做全局限流，本上限只约束单进程。
+    WEBSOCKET_MAX_CONNECTIONS: int = 1000
+
     @field_validator("MODE")
     @classmethod
     def _normalize_mode(cls, v: str) -> str:
@@ -145,6 +155,21 @@ class Settings(BaseSettings):
         if "*" in [o.strip() for o in v.split(",")]:
             raise ValueError("CORS_ORIGINS 不支持通配符 '*'，请显式列出允许的源")
         return v
+
+    @field_validator("WEBSOCKET_PATH")
+    @classmethod
+    def _normalize_ws_path(cls, v: str) -> str:
+        """端点路径规整：必须以 / 开头（否则路由无法挂载），并去除末尾斜杠。
+
+        末尾斜杠会导致 WebSocket 客户端连接 `ws://host/ws/` 与 `/ws` 被视为两条
+        不同路由、握手 404，故统一去掉（保留根路径 "/" 这一特例）。
+        """
+        value = v.strip()
+        if not value.startswith("/"):
+            raise ValueError("WEBSOCKET_PATH 必须以 / 开头")
+        if len(value) > 1 and value.endswith("/"):
+            value = value.rstrip("/")
+        return value
 
     @model_validator(mode="after")
     def _apply_mode_defaults(self) -> "Settings":
