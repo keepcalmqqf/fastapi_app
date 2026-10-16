@@ -16,12 +16,22 @@ async def get_user_role_codes(db: AsyncSession, user_id: int) -> set[str]:
 
 
 async def get_user_permission_codes(db: AsyncSession, user_id: int) -> set[str]:
-    """用户全部角色聚合出的权限 code 集合（多角色权限取并集）。"""
+    """用户全部角色聚合出的权限 code 集合（多角色权限取并集）。
+
+    已软删的角色（Role.deleted_at 非空）与已软删的权限均不计入——
+    与 get_user_role_codes 一致，确保角色被删除后其权限即时回收，
+    不会出现「界面已隐藏角色、接口却仍放行」的判定不一致。
+    """
     stmt = (
         select(Permission.code)
         .join(role_permission_table, Permission.id == role_permission_table.c.permission_id)
-        .join(user_role_table, role_permission_table.c.role_id == user_role_table.c.role_id)
-        .where(user_role_table.c.user_id == user_id, Permission.deleted_at.is_(None))
+        .join(Role, Role.id == role_permission_table.c.role_id)
+        .join(user_role_table, Role.id == user_role_table.c.role_id)
+        .where(
+            user_role_table.c.user_id == user_id,
+            Role.deleted_at.is_(None),
+            Permission.deleted_at.is_(None),
+        )
     )
     rows = await db.execute(stmt)
     return {r[0] for r in rows.all()}

@@ -201,3 +201,91 @@ def test_unknown_role_code_ignored_on_assign(client):
     )
     assert assign.status_code == 200
     assert {r["code"] for r in assign.json()["data"]} == {"viewer"}
+
+
+def test_delete_role_revokes_user_permissions(client):
+    """自定义角色被删除后，原持有该角色的用户权限应被即时回收。
+
+    回归测试：此前 get_user_permission_codes 未过滤 Role.deleted_at，
+    软删角色后权限仍残留，导致界面隐藏角色但接口仍放行。
+    """
+    token = _create_first_admin(client)
+    auth = _auth(token)
+    plain = _create_user(client, token, "plain@test.com")
+    plain_token = _login(client, "plain@test.com")
+
+    # 建一个仅含 user:write 的自定义角色并赋给用户
+    created = client.post("/api/v1/role/", json={"name": "可写", "code": "writer"}, headers=auth)
+    assert created.status_code == 200
+    rid = created.json()["data"]["id"]
+    perm = client.post(
+        f"/api/v1/role/{rid}/permissions",
+        json={"permission_codes": ["user:write"]},
+        headers=auth,
+    )
+    assert perm.status_code == 200
+    assign = client.post(
+        f"/api/v1/user/{plain['id']}/roles",
+        json={"role_codes": ["writer"]},
+        headers=auth,
+    )
+    assert assign.status_code == 200
+
+    def _create_plain() -> int:
+        return client.post(
+            "/api/v1/user/",
+            json={"name": "zzz", "email": "z@test.com", "password": "abcd1234"},
+            headers=_auth(plain_token),
+        ).status_code
+
+    # 赋权后可创建用户
+    assert _create_plain() == 200
+
+    # 删除该角色（软删除），权限应即时回收
+    assert client.delete(f"/api/v1/role/{rid}", headers=auth).status_code == 200
+
+    # 角色删除后不再持有 user:write：创建用户被拒，且角色列表中已无该角色
+    assert _create_plain() == 403
+    roles = client.get(f"/api/v1/user/{plain['id']}/roles", headers=auth)
+    assert not any(r["code"] == "writer" for r in roles.json()["data"])
+
+
+def test_admin_cannot_assign_super_admin(client):
+    """普通管理员（拥有 user:write 但非 super_admin）不能分配 super_admin 角色。
+
+    回归测试：此前 set_user_roles 对 super_admin code 无校验，任何 admin 可自我提权。
+    """
+    token = _create_first_admin(client)
+    auth = _auth(token)
+    mgr = _create_user(client, token, "mgr@test.com")
+    # 该用户授予 admin 角色（含 user:write，可调用角色分配接口）
+    client.post(
+        f"/api/v1/user/{mgr['id']}/roles",
+        json={"role_codes": ["admin"]},
+        headers=auth,
+    )
+    mgr_token = _login(client, "mgr@test.com")
+
+    # 非 super_admin 尝试把 super_admin 分配给他人 → 403，且未被提权
+    resp = client.post(
+        f"/api/v1/user/{mgr['id']}/roles",
+        json={"role_codes": ["super_admin"]},
+        headers=_auth(mgr_token),
+    )
+    assert resp.status_code == 403
+    roles = client.get(f"/api/v1/user/{mgr['id']}/roles", headers=auth)
+    assert not any(r["code"] == "super_admin" for r in roles.json()["data"])
+
+
+def test_super_admin_can_assign_super_admin(client):
+    """超级管理员可分配 super_admin 角色，确认拦截未误伤正常提权场景。"""
+    token = _create_first_admin(client)
+    auth = _auth(token)
+    other = _create_user(client, token, "other@test.com")
+    resp = client.post(
+        f"/api/v1/user/{other['id']}/roles",
+        json={"role_codes": ["super_admin"]},
+        headers=auth,
+    )
+    assert resp.status_code == 200
+    assert any(r["code"] == "super_admin" for r in resp.json()["data"])

@@ -231,8 +231,14 @@ async def set_user_roles_endpoint(
     user_id: int,
     data: SetUserRolesIn,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_permissions("user:write")),
+    current_user: User = Depends(require_permissions("user:write")),
 ) -> Result[list[RoleOut]]:
+    # 仅超级管理员可分配超级管理员角色，避免普通管理员（拥有 user:write）自我提权。
+    # 系统内置角色（admin/viewer）的向下分配仍放开，兼容多管理员协作场景。
+    if rbac_service.SUPER_ADMIN_CODE in data.role_codes:
+        caller_roles = await rbac_service.get_user_role_codes(db, current_user.id)
+        if rbac_service.SUPER_ADMIN_CODE not in caller_roles:
+            raise HTTPException(status_code=403, detail="仅超级管理员可分配超级管理员角色")
     user = await _load_user_or_404(db, user_id)
     await rbac_service.set_user_roles(db, user, data.role_codes)
     roles = await rbac_repo.get_user_roles(db, user_id, with_perms=True)
