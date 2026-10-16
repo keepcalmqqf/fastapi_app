@@ -216,3 +216,47 @@ def test_enabled_translates_success_message(i18n_enabled):
 
     assert client.get("/ok", headers={"Accept-Language": "en-US"}).json()["message"] == "Signed in"
     assert client.get("/ok").json()["message"] == "登录成功"
+
+
+def test_success_message_translated_without_explicit_flag(i18n_enabled):
+    """回归：普通接口不显式传 translate=True 时，英文请求也应翻译成功文案。
+
+    此前翻译是逐路由 opt-in（只有 auth.py 显式打开），导致 user/member/role 等
+    绝大多数接口在英文环境下 message 仍是中文。放开默认后，仅靠中间件解析出的语种
+    就应自动翻译。
+    """
+    from app.core import result
+
+    async def create_endpoint() -> Result[str]:
+        # 不传 translate，验证默认行为
+        return result.ok(data="x", message="创建成功")
+
+    app = FastAPI()
+    setup(app)
+    app.get("/create")(create_endpoint)
+    client = TestClient(app)
+
+    assert client.get("/create", headers={"Accept-Language": "en-US"}).json()["message"] == (
+        "Created successfully"
+    )
+    # 未声明语种时按默认语种返回中文原文
+    assert client.get("/create").json()["message"] == "创建成功"
+
+
+def test_failure_message_translated(i18n_enabled):
+    """回归：result.failure 的文案同样按语种返回（此前完全不翻译）。"""
+    from app.core import result
+
+    async def boom_endpoint() -> Result[None]:
+        return result.failure(code=403, message="未授权访问")
+
+    app = FastAPI()
+    setup(app)
+    app.get("/boom")(boom_endpoint)
+    client = TestClient(app)
+
+    resp = client.get("/boom", headers={"Accept-Language": "en-US"})
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 403
+    assert resp.json()["message"] == "Unauthorized access"
+    assert client.get("/boom").json()["message"] == "未授权访问"

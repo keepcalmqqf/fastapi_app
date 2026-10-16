@@ -76,6 +76,26 @@ CATALOGS: dict[str, dict[str, str]] = {
         "字段不能为空或纯空白": "Field cannot be blank",
         "密码必须同时包含字母和数字": "Password must contain both letters and digits",
         "登录失败次数过多，请稍后重试": "Too many failed sign-in attempts, please retry later",
+        # 以下为各业务接口成功响应的文案（此前仅靠 auth.py 显式 translate=True 才翻译，
+        # 其余接口的 message 默认不翻译；统一放开后需把用到的成功文案都补进词条表）
+        "管理员初始化成功": "Admin initialized",
+        "注册成功": "Registration successful",
+        "邮箱验证成功": "Email verified",
+        "邮箱已验证，无需重复发送": "Email already verified, no need to resend",
+        "验证邮件已发送": "Verification email sent",
+        "刷新成功": "Token refreshed",
+        "退出登录成功": "Signed out",
+        "更新成功": "Updated successfully",
+        "注销成功": "Account closed",
+        "删除成功": "Deleted successfully",
+        "角色已更新": "Roles updated",
+        "权限已更新": "Permissions updated",
+        "创建成功": "Created successfully",
+        "服务正常": "Service is running",
+        "部分依赖不可用": "Some dependencies are unavailable",
+        # 失败响应文案（result.failure 现已默认翻译）
+        "未授权访问": "Unauthorized access",
+        "请求过于频繁，请稍后重试": "Too many requests, please try again later",
     },
 }
 

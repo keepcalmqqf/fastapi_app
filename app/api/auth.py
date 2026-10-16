@@ -56,9 +56,7 @@ async def bootstrap(
         detail={"email": created.email, "bootstrap": True},
         ip=audit_service.client_ip(request),
     )
-    return result.ok(
-        data=UserOut.model_validate(created), message="管理员初始化成功", translate=True
-    )
+    return result.ok(data=UserOut.model_validate(created), message="管理员初始化成功")
 
 
 @router.get("/permissions", summary="当前登录用户权限", response_model=Result[UserPermissionsOut])
