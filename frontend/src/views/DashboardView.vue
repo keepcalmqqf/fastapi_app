@@ -4,10 +4,18 @@ import type { AuditLog } from '../api/audit'
 import { listMembers } from '../api/member'
 import { listUsers } from '../api/user'
 import { useAuthStore } from '../stores/auth'
+import { usePermissionStore } from '../stores/permission'
 import { formatTime } from '../utils/datetime'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const permissionStore = usePermissionStore()
+
+// 概览页聚合了多个模块的数据，缺权限的模块必须整体跳过：
+// 一是避免低权限账号每分钟被 403 提示刷屏，二是与后端权限守卫口径一致
+const canReadUsers = computed(() => permissionStore.can('user:read'))
+const canReadMembers = computed(() => permissionStore.can('member:read'))
+const canReadAudit = computed(() => permissionStore.can('audit:read'))
 
 // 最近一次成功刷新的时间（UTC ISO）
 const lastUpdated = ref<string | null>(null)
@@ -22,41 +30,51 @@ const stats = reactive<{ users: number | string; members: number | string; logs:
 const recentLogs = ref<AuditLog[]>([])
 const loading = ref(false)
 
-const statCards = computed(() => [
-  {
-    key: 'users',
-    label: '管理员用户',
-    value: stats.users,
-    icon: 'User',
-    color: 'var(--el-color-primary)',
-    route: 'users',
-  },
-  {
-    key: 'members',
-    label: '会员总数',
-    value: stats.members,
-    icon: 'Avatar',
-    color: 'var(--el-color-success)',
-    route: 'members',
-  },
-  {
-    key: 'logs',
-    label: '审计日志',
-    value: stats.logs,
-    icon: 'Document',
-    color: 'var(--el-color-warning)',
-    route: 'audit-logs',
-  },
-])
+// 各卡片所需权限与对应菜单保持一致，无权限则不展示（点了也会被守卫弹回）
+const statCards = computed(
+  () =>
+    [
+      {
+        key: 'users',
+        label: '管理员用户',
+        value: stats.users,
+        icon: 'User',
+        color: 'var(--el-color-primary)',
+        route: 'users',
+        permission: 'user:read',
+      },
+      {
+        key: 'members',
+        label: '会员总数',
+        value: stats.members,
+        icon: 'Avatar',
+        color: 'var(--el-color-success)',
+        route: 'members',
+        permission: 'member:read',
+      },
+      {
+        key: 'logs',
+        label: '审计日志',
+        value: stats.logs,
+        icon: 'Document',
+        color: 'var(--el-color-warning)',
+        route: 'audit-logs',
+        permission: 'audit:read',
+      },
+    ].filter((card) => permissionStore.can(card.permission)),
+)
 
 async function loadOverview() {
   loading.value = true
   try {
-    // 各统计相互独立，任一失败不影响其余卡片展示
+    // 各统计相互独立，任一失败不影响其余卡片展示；
+    // 无权限的接口直接不请求（结果保持为 '-'），避免 403 提示与无效轮询
     const [usersRes, membersRes, logsRes] = await Promise.allSettled([
-      listUsers(1, 1),
-      listMembers(1, 1),
-      listAuditLogs({ page: 1, page_size: 10 }),
+      canReadUsers.value ? listUsers(1, 1) : Promise.reject(new Error('no-permission')),
+      canReadMembers.value ? listMembers(1, 1) : Promise.reject(new Error('no-permission')),
+      canReadAudit.value
+        ? listAuditLogs({ page: 1, page_size: 10 })
+        : Promise.reject(new Error('no-permission')),
     ])
     if (usersRes.status === 'fulfilled') stats.users = usersRes.value.data.total
     if (membersRes.status === 'fulfilled') stats.members = membersRes.value.data.total
@@ -121,7 +139,7 @@ function actorLabel(row: AuditLog): string {
       </el-col>
     </el-row>
 
-    <el-card class="admin-card" shadow="never">
+    <el-card v-if="canReadAudit" class="admin-card" shadow="never">
       <template #header>
         <div class="admin-toolbar">
           <span class="admin-toolbar__title">

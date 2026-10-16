@@ -42,6 +42,41 @@ def test_api_info(client):
     body = resp.json()
     assert body["code"] == 200
     assert body["data"]["service"] == "fastapi_app"
+    # 免鉴权暴露「是否仍需初始化」，供前端决定初始化入口是否展示
+    assert body["data"]["needs_bootstrap"] is True
+
+
+def test_api_info_needs_bootstrap_false_after_admin_exists(client):
+    """已有管理员后 needs_bootstrap 变为 False。"""
+    resp = client.post(
+        "/api/v1/auth/bootstrap",
+        json={"name": "张三", "email": "zhangsan@test.com", "password": "abcd1234"},
+    )
+    assert resp.status_code == 200
+    assert client.get("/api/v1/info").json()["data"]["needs_bootstrap"] is False
+
+
+def test_health_live_does_not_probe_dependencies(client, broken_redis):
+    """存活探活只看进程：依赖故障不影响 /health/live。
+
+    容器 HEALTHCHECK 打依赖敏感端点会把一次 Redis 抖动放大成容器重启。
+    """
+    resp = client.get("/health/live")
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "ok"
+
+
+def test_health_ready_probes_dependencies(client, broken_redis):
+    """/health/ready 与 /health 一样探依赖，Redis 故障时返回 503。"""
+    assert client.get("/health/ready").status_code == 503
+
+
+def test_security_response_headers(client):
+    """统一响应头：安全头始终下发。"""
+    resp = client.get("/api/v1/info")
+    assert resp.headers["X-Content-Type-Options"] == "nosniff"
+    assert resp.headers["X-Frame-Options"] == "DENY"
+    assert resp.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
 
 
 def test_health_ok(client):

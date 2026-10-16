@@ -14,6 +14,13 @@ const form = reactive({
   password: '',
 })
 
+// 初始化入口只在「库里还没有管理员」时出现；已初始化后不再暴露该入口
+const canBootstrap = ref(false)
+onMounted(async () => {
+  if (authStore.needsBootstrap === null) await authStore.checkBootstrap()
+  canBootstrap.value = authStore.needsBootstrap === true
+})
+
 const rules: FormRules = {
   email: [
     { required: true, message: '请输入邮箱', trigger: 'blur' },
@@ -69,8 +76,9 @@ async function onSubmit() {
           登录
         </el-button>
       </el-form>
-      <div class="footer-link">
-        没有账号？<router-link to="/register">去注册</router-link>
+      <div v-if="canBootstrap" class="footer-link">
+        尚未初始化？
+        <router-link to="/register">创建首个管理员</router-link>
       </div>
     </el-card>
   </div>

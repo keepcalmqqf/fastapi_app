@@ -10,6 +10,7 @@ from app.core.rbac import require_permissions
 from app.core.result import Result
 from app.core.revocation import revoke_subject
 from app.core.settings import settings
+from app.login_guard import login_guard
 from app.models import Member
 from app.repositories import member as member_repo
 from app.schemas.member import (
@@ -76,6 +77,9 @@ async def login(
     db: AsyncSession = Depends(get_db),
     redis: Any = Depends(get_redis),
 ) -> Result[TokenOut]:
+    ip = audit_service.client_ip(request)
+    # 与后台登录一致：先查账号/IP 锁定再校验密码，连续失败计入防爆破计数
+    await login_guard.ensure_not_locked(redis, subject=f"member:{data.email.lower()}", ip=ip)
     member = await member_service.authenticate(db, data.email, data.password)
     if member is None:
         await audit_service.record(
@@ -85,9 +89,11 @@ async def login(
             action=ACTION_LOGIN_FAILED,
             target_type="member",
             target_id=data.email,
-            ip=audit_service.client_ip(request),
+            ip=ip,
         )
+        await login_guard.register_failure(redis, subject=f"member:{data.email.lower()}", ip=ip)
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
+    await login_guard.reset(redis, subject=f"member:{data.email.lower()}", ip=ip)
     if settings.REQUIRE_EMAIL_VERIFICATION and not member.email_verified:
         raise HTTPException(status_code=403, detail="邮箱未验证，请先完成邮箱验证")
     tokens = await token_service.issue_tokens(

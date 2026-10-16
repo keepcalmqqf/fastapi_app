@@ -33,7 +33,7 @@ def _set_cookie(response, name: str):
 
 
 def _create_admin(client) -> None:
-    resp = client.post("/api/v1/user/", json=USER_PAYLOAD)
+    resp = client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     assert resp.status_code == 200, resp.text
 
 

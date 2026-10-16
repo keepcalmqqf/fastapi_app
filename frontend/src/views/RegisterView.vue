@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { register as apiRegister } from '../api/auth'
+import { bootstrapAdmin } from '../api/auth'
 import { useAuthStore } from '../stores/auth'
 
 const router = useRouter()
 const authStore = useAuthStore()
+
+// 本页只在「仍需初始化首个管理员」时可用；已初始化则不应出现在这里
+if (authStore.needsBootstrap === null) await authStore.checkBootstrap()
+if (authStore.needsBootstrap === false) router.replace({ name: 'login' })
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)
@@ -43,7 +47,7 @@ async function onSubmit() {
     if (!valid) return
     loading.value = true
     try {
-      await apiRegister(form.name, form.email, form.password)
+      await bootstrapAdmin(form.name, form.email, form.password)
       // 注册不种 cookie，继续调登录建立会话后直达首页
       await authStore.login(form.email, form.password)
       ElMessage.success('注册成功')
@@ -61,7 +65,7 @@ async function onSubmit() {
   <div class="register-page">
     <el-card class="register-card">
       <h2 class="title">注册账号</h2>
-      <p class="hint">首次部署时，注册用于初始化管理员账号；初始化完成后注册入口将关闭，请直接登录。</p>
+      <p class="hint">当前尚无管理员账号，本页用于初始化首个管理员；初始化完成后入口自动关闭。</p>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent>
         <el-form-item label="昵称" prop="name">
           <el-input v-model="form.name" maxlength="32" placeholder="2-32 个字符" clearable />

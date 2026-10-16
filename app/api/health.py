@@ -36,3 +36,19 @@ async def health(request: Request) -> JSONResponse:
             message="服务正常" if healthy else "部分依赖不可用",
         ).model_dump(),
     )
+
+
+@router.get("/health/live", summary="存活探活（不探依赖）", response_model=Result[dict])
+async def health_live() -> Result[dict]:
+    """只表示进程本身存活，不探 MySQL/Redis。
+
+    容器探活应打这个端点：依赖短暂抖动不应把容器整体判为不健康，否则编排层可能
+    据此摘流量或重启，把一次 Redis 抖动放大成全部副本重启。
+    """
+    return result.ok(data={"status": "ok"}, message="服务正常")
+
+
+@router.get("/health/ready", summary="就绪检查（探依赖）", response_model=Result[dict])
+async def health_ready(request: Request) -> JSONResponse:
+    """依赖全部可用才算就绪，供网关/编排做流量摘除判断。"""
+    return await health(request)

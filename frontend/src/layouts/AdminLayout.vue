@@ -22,7 +22,7 @@ const menuItems = computed(() => {
   const root = router.options.routes.find((item) => item.path === '/')
   return (root?.children ?? []).filter((item) => {
     if (!item.meta?.title) return false
-    if (item.meta.permission && !permissionStore.has(item.meta.permission)) return false
+    if (item.meta.permission && !permissionStore.can(item.meta.permission)) return false
     return true
   })
 })

@@ -35,9 +35,14 @@ async def main() -> None:
     set_redis(create_redis())
 
     async with AsyncSessionLocal() as db:
-        # 1) 幂等播种：超管 / 管理员 / 访客三角色 + 7 个权限点
+        # 1) 幂等播种：超管 / 管理员 / 访客三角色 + 全部权限点
         await rbac_service.ensure_seeded(db)
         logger.info("RBAC 角色/权限种子数据已就绪（已存在则跳过）")
+
+        # 2) 增量补齐：ensure_seeded 在角色已存在时会直接返回，新增权限点（如
+        # audit:read）不会自动进入存量库，这里按种子定义补齐缺失的权限与角色关联
+        updated = await rbac_service.ensure_seed_updates(db)
+        logger.info("种子权限增量补齐：%s", "已更新" if updated else "无需变更")
 
         # 2) 给尚无任何角色的用户补授超级管理员
         users = (await db.execute(select(User).where(User.deleted_at.is_(None)))).scalars().all()

@@ -44,6 +44,13 @@ export const usePermissionStore = defineStore('permission', () => {
     return codes.every((c) => permissionCodes.value.includes(c))
   }
 
+  // 路由/菜单/组件级统一入口：超级管理员放行一切。
+  // 直接用 has() 判断会让超管在没有显式权限码时被自己的菜单挡在门外
+  // （后端断言与按钮指令都是超管放行，这里必须保持一致）。
+  function can(code: string): boolean {
+    return isSuperAdmin.value || has(code)
+  }
+
   // 是否拥有指定角色（任一满足）
   function hasRole(code: string): boolean {
     return roleCodes.value.includes(code)
@@ -62,6 +69,7 @@ export const usePermissionStore = defineStore('permission', () => {
     hasAny,
     hasAll,
     hasRole,
+    can,
     isSuperAdmin,
   }
 })

@@ -2,11 +2,12 @@ import request from './request'
 import type { ApiResult } from './request'
 import type { Page } from './user'
 
-// 会员条目，对应后端 MemberOut
+// 会员条目，对应后端 MemberOut（nickname/email 在后端为非空字段）
 export interface Member {
   id: number
-  nickname: string | null
-  email: string | null
+  nickname: string
+  email: string
+  email_verified: boolean
   is_active: boolean
   created_at: string
   updated_at: string

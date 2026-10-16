@@ -77,11 +77,14 @@ class FakeRedis:
 
     def __init__(self) -> None:
         self._data: dict[str, str] = {}
+        # key -> 过期秒数（登录锁定等 TTL 相关逻辑需要）
+        self._ttl: dict[str, int] = {}
         # 故障开关：置 True 后 ping 抛异常，供 /health degraded 用例使用
         self.broken = False
 
     def reset(self) -> None:
         self._data.clear()
+        self._ttl.clear()
         self.broken = False
 
     async def ping(self) -> bool:
@@ -91,6 +94,21 @@ class FakeRedis:
 
     async def get(self, key: str) -> str | None:
         return self._data.get(key)
+
+    async def exists(self, *keys: str) -> int:
+        return sum(1 for key in keys if key in self._data)
+
+    async def incr(self, key: str) -> int:
+        value = int(self._data.get(key, "0")) + 1
+        self._data[key] = str(value)
+        return value
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        self._ttl[key] = ttl
+        return True
+
+    async def ttl(self, key: str) -> int:
+        return self._ttl.get(key, -1) if key in self._data else -2
 
     async def set(self, key: str, value: str, ex: int | None = None) -> bool:
         self._data[key] = value
@@ -102,6 +120,7 @@ class FakeRedis:
     async def delete(self, *keys: str) -> int:
         count = 0
         for key in keys:
+            self._ttl.pop(key, None)
             if key in self._data:
                 del self._data[key]
                 count += 1

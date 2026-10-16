@@ -41,7 +41,7 @@ def _login(client) -> str:
 
 def _admin_token(client) -> str:
     """空库自举创建管理员并登录，返回 admin 令牌。"""
-    resp = client.post("/api/v1/user/", json=USER_PAYLOAD)
+    resp = client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     assert resp.status_code == 200, resp.text
     return _login(client)
 
@@ -62,7 +62,7 @@ def _logs(client, token: str, **params) -> dict:
 
 def test_create_user_audited_without_actor_on_bootstrap(client):
     """创建用户留痕；空库自举时没有操作者，actor_id 为 None。"""
-    assert client.post("/api/v1/user/", json=USER_PAYLOAD).status_code == 200
+    assert client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD).status_code == 200
     token = _login(client)
 
     data = _logs(client, token)

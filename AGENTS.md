@@ -30,10 +30,11 @@
 │   │   ├── deps.py          # get_current_user/get_current_member（async 依赖：黑名单 + 主体撤销 + CSRF 校验）
 │   │   ├── revocation.py    # 主体级令牌撤销标记（Redis）：账号被删/停用时作废其全部令牌
 │   │   ├── result.py        # 统一响应 Result[T] 泛型与 ok()/failure() 工厂
-│   │   ├── middleware.py    # CORS 中间件（origins 走配置）
+│   │   ├── middleware.py    # CORS 中间件 + 响应头中间件（静态缓存策略与安全头）
 │   │   ├── static.py        # SPAStaticFiles：托管 frontend/dist，404 回退 index.html
 │   │   └── exceptions.py    # 全局异常处理（统一响应，内部细节只进日志）
 │   ├── api/                 # 路由层：auth.py、user.py、member.py、audit.py、health.py、index.py；业务路由统一挂 /api/v1 前缀
+│   ├── login_guard.py       # 登录防爆破：按账号（可选 IP）统计连续失败并临时锁定
 │   ├── services/            # 业务逻辑层，事务边界在此（负责 commit）
 │   ├── repositories/        # 数据访问层，只查询/flush，绝不 commit
 │   ├── models/              # SQLAlchemy ORM 模型（__init__.py 统一导入供 Alembic 发现）
@@ -95,7 +96,8 @@
 | `ENABLE_DOCS` | 未设置（DEV 开、PROD 关） | API 文档（`/docs`、`/openapi.json`、`/redoc`）开关，显式设置则以设置为准 |
 | `ALLOW_BOOTSTRAP` | 未设置（DEV 开、PROD 关） | 空库免鉴权创建首个管理员的开关；PROD 默认关闭，避免服务启动后被抢建管理员 |
 | `REQUIRE_EMAIL_VERIFICATION` / `EMAIL_VERIFY_TOKEN_EXPIRE_HOURS` / `EMAIL_VERIFY_URL_BASE` | `false` / 24 / http://localhost:5173/verify-email | 邮箱验证；关闭时不强制验证即可登录。邮件投递实现见 `app/services/mailer.py`（默认只记日志，接真实服务时替换） |
-| `CORS_ORIGINS` | `http://localhost,http://localhost:8080` | 逗号分隔（methods 固定 GET/POST/PUT/DELETE/OPTIONS，headers 固定 Authorization/Content-Type/X-Request-ID/X-Requested-With）；**不支持通配符 `*`**，因本服务启用 `allow_credentials` |
+| `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_SECONDS` / `LOGIN_IP_MAX_FAILURES` | `5` / `900` / `0` | 登录防爆破（`app/login_guard.py`）：同一账号连续失败达阈值后锁定；IP 维度默认关闭；计数存 Redis，Redis 不可用时 fail-open |
+| `CORS_ORIGINS` | `http://localhost,http://localhost:8080` | 逗号分隔（methods 固定 GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS——PATCH 必须列出，否则分域部署预检失败；headers 固定 Authorization/Content-Type/X-Request-ID/X-Requested-With）；**不支持通配符 `*`**，因本服务启用 `allow_credentials` |
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | slowapi 限流插件 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件 + 日志串联插件 |
@@ -116,12 +118,18 @@ cd frontend && npm install && npm run dev    # 前端开发（localhost:5173，A
 cd frontend && npm run build          # 前端构建，产出 frontend/dist（存在时由后端自动托管）
 ```
 
-启动后：Swagger UI 在 `http://127.0.0.1:8000/docs`（PROD 默认关闭），健康检查在 `/health`（返回 mysql/redis 连通性；组件全部正常时 200 + `status=ok`，任一组件 down 时 HTTP 503 + `status=degraded`，body 均为 Result 格式）。
+启动后：Swagger UI 在 `http://127.0.0.1:8000/docs`（PROD 默认关闭）。健康检查分三个端点：`/health/live` 只探进程存活（容器 HEALTHCHECK 用这个，依赖抖动不应导致重启）、`/health/ready` 与 `/health` 探 mysql/redis 连通性（组件全部正常时 200 + `status=ok`，任一组件 down 时 HTTP 503 + `status=degraded`，body 均为 Result 格式）。
+
+**RBAC 种子数据是增量的**：`ensure_seeded` 只在超级管理员角色不存在时播种，新增权限点不会自动进入存量库。新增/调整种子权限后，部署时需跑一次幂等补种（会一并失效用户权限缓存）：
+
+```bash
+uv run python scripts/seed_rbac.py
+```
 
 ## 认证与安全模型
 
 - **双令牌**：access token（默认 30 分钟，`type="access"`、`jti`）+ refresh token（默认 7 天，`type="refresh"`、`jti`），均含 `aud`（`admin`/`member`）隔离身份。`create_access_token(subject, aud, expires_minutes=None)` / `create_refresh_token(subject, aud)`。
-- **登录**（`/api/v1/auth/login`、`/api/v1/member/login`）返回 `TokenOut{access_token,refresh_token,token_type,expires_in}`，并种下双 HttpOnly Cookie（`access_token`/`refresh_token`，`path=/`、`samesite=lax`，Secure 按 `COOKIE_SECURE`：PROD 开、DEV 关）。
+- **登录**（`/api/v1/auth/login`、`/api/v1/member/login`）返回 `TokenOut{access_token,refresh_token,token_type,expires_in}`，并种下双 HttpOnly Cookie（`access_token`/`refresh_token`，`path=/`、`samesite=lax`，Secure 按 `COOKIE_SECURE`：PROD 开、DEV 关）。**防爆破**：`app/login_guard.py` 按账号（可选 IP）统计连续失败，达 `LOGIN_MAX_FAILURES` 后锁定 `LOGIN_LOCKOUT_SECONDS` 秒并返回 429；登录成功清零账号计数；计数存 Redis，Redis 不可用时 fail-open（宁可放行也不让全站登录不可用）。
 - **刷新**（`/api/v1/auth/refresh`、`/api/v1/member/refresh`）：cookie 优先、body `{"refresh_token":...}` 兜底；每次轮换删除旧 refresh `jti`（Redis `refresh:{jti}`），旧 token 重用 401；access token 冒充 refresh 因 `type != "refresh"` 被 401。
 - **令牌类型隔离**（`app/core/deps.py::_resolve_subject`）：受保护接口只接受 `type` 为 `"access"` 或缺省（历史令牌）的令牌，`type="refresh"` 及其他未知类型一律 401。这是必须的——登出只把 access 的 `jti` 写黑名单、refresh 的 `jti` 仅从 `refresh:{jti}` 删除，而该集合在校验访问令牌时不会被查询，因此若放行 refresh 令牌，登出后凭它仍可完成特权写操作。
 - **登出**（`/api/v1/auth/logout`、`/api/v1/member/logout`）：access `jti` 写入 Redis 黑名单（`blacklist:{jti}`，TTL=剩余有效期），refresh `jti` 删除，并清空双 Cookie。登出**只作用于当前设备**，不影响该账号在其他设备上的会话。
@@ -132,7 +140,9 @@ cd frontend && npm run build          # 前端构建，产出 frontend/dist（�
 
 ## 关键接口语义
 
-- `POST /api/v1/user/`（空库自举）：users 表为空时无需 token 即可创建首个管理员；表非空时必须持有有效 admin 令牌（Bearer 或 Cookie），否则 401。密码策略：8-64 位且同时包含字母和数字；name 2-32 位、去空白后非空；email 统一 `lower().strip()` 归一化。
+- `POST /api/v1/auth/bootstrap`（初始化首个管理员）：空库且 `ALLOW_BOOTSTRAP` 打开时免鉴权创建首个管理员，自动播种 RBAC 并授予 `super_admin`；已初始化返回 409，开关关闭返回 403。前端通过 `GET /api/v1/info` 的 `needs_bootstrap` 决定是否展示该入口。
+- `POST /api/v1/user/`（日常创建后台账号）：**恒需**有效 admin 令牌 + `user:write` 权限，否则 401/403。与自举端点分离，避免空库状态下退化为免鉴权入口。密码策略：8-64 位且同时包含字母和数字；name 2-32 位、去空白后非空；email 统一 `lower().strip()` 归一化。
+- `GET /api/v1/audit/logs`：需 `audit:read` 权限（审计日志含操作者与来源 IP，只校验登录态会让任意后台账号读到全量）。种子权限为 `user:read/write`、`member:read/write`、`role:read/write`、`permission:read`、`audit:read`；`admin` 含 `audit:read`，`viewer` 不含。前端权限码与后端必须同步，且菜单/路由守卫用 `permissionStore.can()`（含 super_admin 放行），不要用 `has()`。
 - 登录（`/api/v1/auth/login`、`/api/v1/member/login`）：账号不存在、密码错误、账号禁用（`is_active=False`）一律 401，不泄露账号状态；用户不存在时服务端做 dummy 哈希校验拉平响应耗时。
 - 邮箱撞唯一约束（含并发、软删后重建）返回 409。
 - 分页：`GET /api/v1/user/`、`GET /api/v1/member/`（均 admin 鉴权）返回 `Result[Page[T]]`（`total`/`items`/`page`/`page_size`）；参数 `page≥1`、`page_size` 1-100 默认 20，越界 422。

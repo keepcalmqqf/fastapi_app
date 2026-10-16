@@ -199,6 +199,8 @@ curl -b cookie.jar -X POST http://127.0.0.1:8000/api/v1/user/ \
 | `JWT_ALGORITHM` | `HS256` | 仅允许 HS256/HS384/HS512；令牌含 `iat`/`exp`/`aud`（admin/member 隔离） |
 | `ENABLE_DOCS` | 未设置（DEV 开、PROD 关） | API 文档开关，显式设置则以设置为准 |
 | `CORS_ORIGINS` | `http://localhost,...` | 允许的跨域来源，逗号分隔 |
+| `LOGIN_MAX_FAILURES` / `LOGIN_LOCKOUT_SECONDS` | `5` / `900` | 同一账号连续登录失败达阈值后锁定的时长（秒）；计数存 Redis，Redis 不可用时 fail-open |
+| `LOGIN_IP_MAX_FAILURES` | `0` | 来源 IP 维度的失败阈值；`0` 表示不启用（IP 层已有全局限流兜底） |
 | `ENABLE_RATE_LIMIT` / `RATE_LIMIT` | `false` / `100/minute` | 限流插件 |
 | `RATE_LIMIT_STORAGE_URI` | 未设置（自动推导 Redis） | 限流计数存储；设为 `memory://` 强制退回进程内存，见下方说明 |
 | `ENABLE_METRICS` | `false` | Prometheus `/metrics` 插件 |
@@ -257,6 +259,12 @@ uv run alembic check     # 有差异时非零退出
 
 ## 部署
 
+> **必须先有 HTTPS 终止层。** PROD 模式下认证 Cookie 带 `Secure` 标记，而
+> `docker-compose.prod.yml` 只暴露 8000 端口、不提供 TLS。直接把容器暴露到公网
+> 用 http 访问时，浏览器会拒绝保存认证 Cookie——表现为登录接口返回 200、随后
+> 所有请求 401。请在前面挂 Nginx / Caddy / 云负载均衡做 TLS 终止，再把 8000
+> 端口反代到域名后访问（同源部署时前后端共用域名，无需额外配置 CORS）。
+
 ```bash
 # 构建镜像（多阶段构建：前端 npm run build + 后端依赖，单容器同时托管前后端）
 docker build -t fastapi_app .
@@ -264,6 +272,40 @@ docker build -t fastapi_app .
 # 启动完整环境（需先在 .env 中设置 SECRET_KEY 与 MYSQL_PASSWORD）
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+### 初始化首个管理员
+
+自举与「创建后台用户」是两个端点，语义分离：
+
+| 端点 | 用途 | 鉴权 |
+| --- | --- | --- |
+| `POST /api/v1/auth/bootstrap` | 空库时创建首个管理员（自动授予超级管理员） | 免鉴权，但受 `ALLOW_BOOTSTRAP` 约束 |
+| `POST /api/v1/user/` | 日常创建后台账号 | 恒需 admin 令牌 + `user:write` |
+
+前端登录页会读 `GET /api/v1/info` 的 `needs_bootstrap` 决定「创建首个管理员」
+入口是否展示。PROD 下 `ALLOW_BOOTSTRAP` 默认关闭，请临时开启→初始化→再关闭，
+或用 `scripts/seed_rbac.py` 一类脚本建号。
+
+### RBAC 种子数据的增量补齐
+
+角色与权限的播种只在「自举」路径触发，新增权限点（如 `audit:read`）不会自动
+进入存量库。升级版本后执行一次即可（幂等，可重复运行）：
+
+```bash
+uv run python scripts/seed_rbac.py
+```
+
+它会补齐缺失的权限点与内置角色的权限关联，并清空用户权限缓存（否则最长
+300 秒仍是旧权限）。
+
+### 健康检查
+
+| 端点 | 语义 | 建议用途 |
+| --- | --- | --- |
+| `/health/live` | 只判断进程存活，不探依赖 | 容器 HEALTHCHECK / k8s liveness |
+| `/health/ready` 与 `/health` | 探 MySQL + Redis，任一不可用返回 503 | 网关摘流量 / k8s readiness |
+
+用 `/health` 做容器探活会把 Redis 的一次抖动放大成容器重启，务必区分。
 
 **数据库迁移已内建到容器启动命令**：容器 CMD 会先执行 `alembic upgrade head`
 再拉起服务，因此无需（也不应）手动进容器跑迁移；迁移失败时容器直接退出，

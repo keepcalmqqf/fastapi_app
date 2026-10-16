@@ -68,6 +68,32 @@ def test_prod_accepts_strong_secret_key_and_password():
     assert s.cookie_secure is True  # PROD 默认开启 Secure Cookie
 
 
+def test_prod_metrics_enabled_requires_token():
+    """PROD 开启指标采集时必须配置 METRICS_TOKEN。
+
+    回归：compose 的 ${METRICS_TOKEN} 在 .env 漏配时会被替换成空串，鉴权判定为
+    「未配置」从而静默把 /metrics 变成公开端点。
+    """
+    with pytest.raises(ValidationError):
+        Settings(
+            MODE="PROD",
+            SECRET_KEY=STRONG_KEY,
+            MYSQL_PASSWORD="strong-password",
+            ENABLE_METRICS=True,
+            METRICS_TOKEN="",
+            _env_file=None,
+        )
+    s = Settings(
+        MODE="PROD",
+        SECRET_KEY=STRONG_KEY,
+        MYSQL_PASSWORD="strong-password",
+        ENABLE_METRICS=True,
+        METRICS_TOKEN="metrics-secret",
+        _env_file=None,
+    )
+    assert s.METRICS_TOKEN == "metrics-secret"
+
+
 def test_jwt_algorithm_whitelist():
     """JWT_ALGORITHM 仅允许 HS256/HS384/HS512，防止误配 none 等不安全算法。"""
     for alg in ("HS256", "HS384", "HS512"):

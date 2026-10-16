@@ -26,12 +26,20 @@ _SEED_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
     ("role:read", "查看角色权限", "role", "read"),
     ("role:write", "管理角色权限", "role", "write"),
     ("permission:read", "查看权限", "permission", "read"),
+    # 审计日志含操作者、来源 IP 与变更详情，属敏感数据，必须鉴权后才能读取
+    ("audit:read", "查看审计日志", "audit", "read"),
 )
 
 # 自举/种子预置的角色：(code, name, 该角色拥有的权限 code 列表, is_system)
+# 访客只给业务读权限：审计日志含 IP 与变更详情，不应向只读账号开放
 _SEED_ROLES: tuple[tuple[str, str, tuple[str, ...], bool], ...] = (
     (SUPER_ADMIN_CODE, "超级管理员", tuple(p[0] for p in _SEED_PERMISSIONS), True),
-    ("admin", "管理员", ("user:read", "user:write", "member:read", "member:write"), True),
+    (
+        "admin",
+        "管理员",
+        ("user:read", "user:write", "member:read", "member:write", "audit:read"),
+        True,
+    ),
     ("viewer", "访客", ("user:read", "member:read"), True),
 )
 
@@ -98,6 +106,40 @@ async def ensure_seeded(db: AsyncSession) -> None:
         role = await rbac_repo.create_role(db, name, code, is_system=is_system)
         await rbac_repo.set_role_permissions(db, role, [perms[c] for c in perm_codes if c in perms])
     await db.commit()
+
+
+async def ensure_seed_updates(db: AsyncSession) -> bool:
+    """为已存在角色的库做增量补齐，返回是否发生了变更。
+
+    `ensure_seeded` 在超级管理员角色已存在时会直接返回，因此新增权限点（如
+    audit:read）不会自动进入存量库——只改种子代码对已部署环境无效。本函数按
+    种子定义补齐「缺失的权限点」与「内置角色缺失的权限关联」，自定义角色不在
+    种子定义内故不受影响；无变更时只做查询，不做写操作。
+    """
+    changed = False
+    perms: dict[str, Permission] = {}
+    for code, name, resource, action in _SEED_PERMISSIONS:
+        existing = await rbac_repo.get_permission_by_code(db, code)
+        if existing is None:
+            perms[code] = await rbac_repo.create_permission(db, name, code, resource, action)
+            changed = True
+        else:
+            perms[code] = existing
+    for code, _name, perm_codes, _is_system in _SEED_ROLES:
+        role = await rbac_repo.get_role_by_code(db, code)
+        if role is None:
+            continue
+        current = await rbac_repo.get_role_permission_codes(db, role.id)
+        missing = [c for c in perm_codes if c not in current]
+        if not missing:
+            continue
+        await rbac_repo.add_role_permissions(db, role, [perms[c] for c in missing])
+        changed = True
+    if changed:
+        await db.commit()
+        # 权限集合变化会影响任意用户，且缓存 TTL 长达 300s，必须主动失效
+        await invalidate_all_user_caches()
+    return changed
 
 
 async def assign_role_to_user(db: AsyncSession, user: User, role_code: str) -> bool:

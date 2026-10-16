@@ -23,14 +23,14 @@ def _login(client, email: str, password: str) -> str:
 def _create_first_admin(client, payload: dict | None = None) -> str:
     """空库自举创建首个管理员并登录，返回 admin token。"""
     payload = payload or USER_PAYLOAD
-    resp = client.post("/api/v1/user/", json=payload)
+    resp = client.post("/api/v1/auth/bootstrap", json=payload)
     assert resp.status_code == 200, f"创建首个管理员失败: {resp.text}"
     return _login(client, payload["email"], payload["password"])
 
 
 def test_create_user_bootstrap_without_token(client):
     """空库自举：users 表为空时无 token 可创建首个管理员。"""
-    resp = client.post("/api/v1/user/", json=USER_PAYLOAD)
+    resp = client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     assert resp.status_code == 200
     body = resp.json()
     assert body["code"] == 200
@@ -42,7 +42,7 @@ def test_create_user_bootstrap_without_token(client):
 
 def test_create_user_requires_token_when_table_not_empty(client):
     """表非空时无 token 创建用户返回 401。"""
-    client.post("/api/v1/user/", json=USER_PAYLOAD)
+    client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     resp = client.post(
         "/api/v1/user/",
         json={**USER_PAYLOAD, "email": "lisi@test.com"},
@@ -73,7 +73,7 @@ def test_create_user_duplicate_email(client):
 
 
 def test_create_user_validation_error(client):
-    resp = client.post("/api/v1/user/", json={**USER_PAYLOAD, "name": "张"})
+    resp = client.post("/api/v1/auth/bootstrap", json={**USER_PAYLOAD, "name": "张"})
     assert resp.status_code == 422
     body = resp.json()
     assert body["code"] == 422
@@ -84,7 +84,7 @@ def test_create_user_validation_error(client):
 
 def test_create_user_weak_password(client):
     """纯数字密码不满足「字母+数字」策略，返回 422。"""
-    resp = client.post("/api/v1/user/", json={**USER_PAYLOAD, "password": "12345678"})
+    resp = client.post("/api/v1/auth/bootstrap", json={**USER_PAYLOAD, "password": "12345678"})
     assert resp.status_code == 422
     errors = resp.json()["data"]["errors"]
     assert any("password" in e["loc"] for e in errors)
@@ -92,7 +92,7 @@ def test_create_user_weak_password(client):
 
 def test_create_user_short_password(client):
     """少于 8 位密码返回 422。"""
-    resp = client.post("/api/v1/user/", json={**USER_PAYLOAD, "password": "abc123"})
+    resp = client.post("/api/v1/auth/bootstrap", json={**USER_PAYLOAD, "password": "abc123"})
     assert resp.status_code == 422
     errors = resp.json()["data"]["errors"]
     assert any("password" in e["loc"] for e in errors)
@@ -100,7 +100,7 @@ def test_create_user_short_password(client):
 
 def test_create_user_blank_name(client):
     """纯空白 name 返回 422。"""
-    resp = client.post("/api/v1/user/", json={**USER_PAYLOAD, "name": "   "})
+    resp = client.post("/api/v1/auth/bootstrap", json={**USER_PAYLOAD, "name": "   "})
     assert resp.status_code == 422
     errors = resp.json()["data"]["errors"]
     assert any("name" in e["loc"] for e in errors)
@@ -109,7 +109,7 @@ def test_create_user_blank_name(client):
 def test_email_normalized(client):
     """大写/带空白邮箱注册后归一化为小写，用小写登录成功。"""
     payload = {**USER_PAYLOAD, "email": "  ZHANGSAN@Test.COM  "}
-    resp = client.post("/api/v1/user/", json=payload)
+    resp = client.post("/api/v1/auth/bootstrap", json=payload)
     assert resp.status_code == 200
     assert resp.json()["data"]["email"] == "zhangsan@test.com"
 
@@ -187,14 +187,14 @@ def test_rest_get_user_invalid_id_returns_422(client):
 
 
 def test_rest_route_requires_token_when_table_not_empty(client):
-    """新路径沿用旧路径的鉴权语义：表非空时创建用户需要令牌。"""
-    client.post("/api/v1/user/", json=USER_PAYLOAD)
+    """创建后台用户恒需令牌：表非空时无令牌返回 401。"""
+    client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     resp = client.post("/api/v1/user/", json={**USER_PAYLOAD, "email": "lisi@test.com"})
     assert resp.status_code == 401
 
 
 def test_get_user_without_token(client):
-    client.post("/api/v1/user/", json=USER_PAYLOAD)
+    client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     resp = client.get("/api/v1/user/1")
     assert resp.status_code == 401
 
@@ -214,7 +214,7 @@ def test_password_is_hashed(client):
 
     from app.models import User
 
-    client.post("/api/v1/user/", json=USER_PAYLOAD)
+    client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     user = run_db(lambda db: db.scalar(select(User).where(User.email == USER_PAYLOAD["email"])))
     assert user is not None
     assert user.password != USER_PAYLOAD["password"]
@@ -229,7 +229,7 @@ def test_login_and_me(client):
 
 
 def test_login_wrong_password(client):
-    client.post("/api/v1/user/", json=USER_PAYLOAD)
+    client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     resp = client.post(
         "/api/v1/auth/login",
         json={"email": USER_PAYLOAD["email"], "password": "wrong-password"},
@@ -239,7 +239,7 @@ def test_login_wrong_password(client):
 
 def test_login_disabled_user(client):
     """禁用账号（is_active=False）登录返回 401。"""
-    client.post("/api/v1/user/", json={**USER_PAYLOAD, "is_active": False})
+    client.post("/api/v1/auth/bootstrap", json={**USER_PAYLOAD, "is_active": False})
     resp = client.post(
         "/api/v1/auth/login",
         json={"email": USER_PAYLOAD["email"], "password": USER_PAYLOAD["password"]},
@@ -461,10 +461,13 @@ def test_disable_self_with_other_fields_still_allowed(client):
 
 
 def test_bootstrap_can_be_disabled(client, monkeypatch):
-    """ALLOW_BOOTSTRAP 关闭后，空库建号同样要求有效令牌（PROD 默认关闭）。"""
+    """ALLOW_BOOTSTRAP 关闭后自举端点直接拒绝（PROD 默认关闭），且无法通过建号绕过。"""
     monkeypatch.setattr(Settings, "bootstrap_allowed", False)
-    resp = client.post("/api/v1/user/", json=USER_PAYLOAD)
-    assert resp.status_code == 401
+    resp = client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
+    assert resp.status_code == 403
+
+    # 自举关闭后 /user/ 仍要求令牌：两者分离，避免端点语义混用留下免鉴权口子
+    assert client.post("/api/v1/user/", json=USER_PAYLOAD).status_code == 401
 
 
 def test_timestamps_come_from_single_utc_source(client):

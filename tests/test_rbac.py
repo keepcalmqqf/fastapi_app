@@ -1,5 +1,7 @@
 from typing import Any
 
+from tests.conftest import run_db
+
 ADMIN_PAYLOAD: dict[str, Any] = {
     "name": "管理员",
     "email": "admin@test.com",
@@ -17,7 +19,7 @@ def _login(client, email: str, password: str = "abcd1234") -> str:
 def _create_first_admin(client, payload: dict | None = None) -> str:
     """空库自举创建首个管理员（自动授予 super_admin）并登录，返回 token。"""
     payload = payload or ADMIN_PAYLOAD
-    resp = client.post("/api/v1/user/", json=payload)
+    resp = client.post("/api/v1/auth/bootstrap", json=payload)
     assert resp.status_code == 200, f"创建首个管理员失败: {resp.text}"
     return _login(client, payload["email"], payload["password"])
 
@@ -289,3 +291,85 @@ def test_super_admin_can_assign_super_admin(client):
     )
     assert resp.status_code == 200
     assert any(r["code"] == "super_admin" for r in resp.json()["data"])
+
+
+def test_audit_read_granted_to_super_admin_and_admin(client):
+    """审计日志需 audit:read：super_admin 与 admin 可读。"""
+    token = _create_first_admin(client)
+    assert client.get("/api/v1/audit/logs", headers=_auth(token)).status_code == 200
+
+    mgr = _create_user(client, token, "mgr@test.com")
+    client.post(
+        f"/api/v1/user/{mgr['id']}/roles",
+        json={"role_codes": ["admin"]},
+        headers=_auth(token),
+    )
+    mgr_token = _login(client, "mgr@test.com")
+    assert client.get("/api/v1/audit/logs", headers=_auth(mgr_token)).status_code == 200
+
+
+def test_audit_read_denied_for_viewer(client):
+    """访客角色（只读业务数据）不应读到审计日志。
+
+    回归：此前 /audit/logs 只校验登录态，任意后台账号都能拉取含 IP 与变更详情的全量审计。
+    """
+    token = _create_first_admin(client)
+    viewer = _create_user(client, token, "viewer@test.com")
+    client.post(
+        f"/api/v1/user/{viewer['id']}/roles",
+        json={"role_codes": ["viewer"]},
+        headers=_auth(token),
+    )
+    viewer_token = _login(client, "viewer@test.com")
+    resp = client.get("/api/v1/audit/logs", headers=_auth(viewer_token))
+    assert resp.status_code == 403
+
+
+def test_audit_permission_is_in_seed_data(client):
+    """种子权限必须包含 audit:read，否则前端菜单与后端守卫口径会再次错位。"""
+    token = _create_first_admin(client)
+    perms = client.get("/api/v1/permission/", headers=_auth(token))
+    assert perms.status_code == 200
+    assert any(p["code"] == "audit:read" for p in perms.json()["data"])
+
+
+def test_seed_updates_backfill_missing_permission(client):
+    """存量库补种：删掉 audit:read 后可由 ensure_seed_updates 幂等补齐。
+
+    回归：ensure_seeded 在角色已存在时直接返回，只改种子代码对存量库无效。
+    """
+    from sqlalchemy import delete
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models import Permission, role_permission_table
+    from app.services import rbac as rbac_service
+
+    token = _create_first_admin(client)
+
+    async def _drop(db: AsyncSession) -> None:
+        perm = await db.scalar(sa_select(Permission).where(Permission.code == "audit:read"))
+        assert perm is not None
+        await db.execute(
+            delete(role_permission_table).where(
+                role_permission_table.c.permission_id == int(perm.id)
+            )
+        )
+        await db.delete(perm)
+        await db.commit()
+
+    run_db(_drop)
+
+    async def _backfill(db: AsyncSession) -> bool:
+        return await rbac_service.ensure_seed_updates(db)
+
+    assert run_db(_backfill) is True
+    # 再次执行无变更，确认幂等
+    assert run_db(_backfill) is False
+
+    # 补齐后超管重新获得 audit:read
+    me = client.get("/api/v1/user/me", headers=_auth(token))
+    uid = me.json()["data"]["id"]
+    roles = client.get(f"/api/v1/user/{uid}/roles", headers=_auth(token))
+    codes = {p["code"] for r in roles.json()["data"] for p in r.get("permissions", [])}
+    assert "audit:read" in codes

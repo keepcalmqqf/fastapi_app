@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import result
 from app.core.database import get_db
-from app.core.deps import get_current_user
+from app.core.rbac import require_permissions
 from app.core.result import Result
 from app.models import User
 from app.schemas.audit import AuditLogOut, AuditLogQuery
@@ -15,14 +15,16 @@ router = APIRouter(prefix="/audit", tags=["审计"])
 
 @router.get(
     "/logs",
-    summary="分页查询审计日志（admin）",
+    summary="分页查询审计日志（需 audit:read）",
     response_model=Result[Page[AuditLogOut]],
 )
 async def list_logs(
     params: PageParams = Depends(),
     query: AuditLogQuery = Depends(),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    # 审计日志含操作者、来源 IP 与变更详情，只做身份认证会让任意后台账号读到全量，
+    # 必须按权限码鉴权（访客角色默认不授予 audit:read）
+    _: User = Depends(require_permissions("audit:read")),
 ) -> Result[Page[AuditLogOut]]:
     items, total = await audit_service.list_logs(
         db,

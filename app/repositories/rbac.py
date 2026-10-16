@@ -135,6 +135,36 @@ async def update_role(db: AsyncSession, role: Role, fields: dict) -> Role:
     return role
 
 
+async def get_role_permission_codes(db: AsyncSession, role_id: int) -> set[str]:
+    """角色当前持有的权限 code 集合（软删权限不计）。"""
+    rows = await db.execute(
+        select(Permission.code)
+        .join(role_permission_table, Permission.id == role_permission_table.c.permission_id)
+        .where(
+            role_permission_table.c.role_id == role_id,
+            Permission.deleted_at.is_(None),
+        )
+    )
+    return {r[0] for r in rows.all()}
+
+
+async def add_role_permissions(db: AsyncSession, role: Role, permissions: list[Permission]) -> None:
+    """为角色追加权限（已存在的关联会跳过），调用方负责事务提交。"""
+    existing = await db.execute(
+        select(role_permission_table.c.permission_id).where(
+            role_permission_table.c.role_id == role.id
+        )
+    )
+    known = {r[0] for r in existing.all()}
+    for perm in permissions:
+        if perm.id in known:
+            continue
+        await db.execute(
+            role_permission_table.insert().values(role_id=role.id, permission_id=perm.id)
+        )
+    await db.flush()
+
+
 async def set_role_permissions(db: AsyncSession, role: Role, permissions: list[Permission]) -> None:
     """整组替换某角色的权限（先清后插，调用方负责事务提交）。"""
     await db.execute(

@@ -82,7 +82,7 @@ def test_verify_email_rejects_access_token(client):
 
 def test_verify_email_rejects_cross_audience(client, monkeypatch):
     """会员的验证令牌不能用于验证后台账号（aud 不匹配）。"""
-    client.post("/api/v1/user/", json=USER_PAYLOAD)
+    client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
     token = create_email_verify_token("1", "member")
     resp = client.post("/api/v1/user/verify-email", json={"token": token})
     assert resp.status_code == 401

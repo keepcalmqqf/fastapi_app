@@ -35,7 +35,8 @@ const request = axios.create({
 })
 
 // 刷新与登录请求自身的 401 不再触发静默刷新，直接按未登录处理
-const NO_RETRY_PATHS = ['/api/v1/auth/refresh', '/api/v1/auth/login']
+// bootstrap 自身失败（如已初始化返回 409）不应触发静默刷新
+const NO_RETRY_PATHS = ['/api/v1/auth/refresh', '/api/v1/auth/login', '/api/v1/auth/bootstrap']
 
 function isNoRetryPath(url?: string): boolean {
   return !!url && NO_RETRY_PATHS.some((p) => url.includes(p))

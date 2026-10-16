@@ -41,7 +41,7 @@ def _member_login(client) -> dict:
 
 def _create_admin_token(client) -> str:
     """空库自举创建首个管理员并登录，返回 admin token。"""
-    resp = client.post("/api/v1/user/", json=ADMIN_PAYLOAD)
+    resp = client.post("/api/v1/auth/bootstrap", json=ADMIN_PAYLOAD)
     assert resp.status_code == 200, f"创建首个管理员失败: {resp.text}"
     resp = client.post(
         "/api/v1/auth/login",

@@ -32,9 +32,11 @@ RUN useradd --create-home appuser && chown -R appuser /app
 USER appuser
 # 暴露端口
 EXPOSE 8000
-# 健康检查
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+# 健康检查：探 /health/live（只看进程存活，不探 MySQL/Redis），避免依赖抖动被
+# 放大成容器重启；依赖就绪判断交给 /health/ready 由编排层按需使用。
+# start-period 覆盖启动期跑 alembic upgrade head 的时间，避免迁移期间被误判。
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=40s \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')"]
 # 启动前先执行数据库迁移：漏跑迁移会让所有依赖表结构的接口直接 500，
 # 这里让它成为启动的必经步骤（迁移失败即容器退出，不会带病对外提供服务）。
 # exec 保证 uvicorn 接管 PID 1，信号能正常传递；worker 数按容器 CPU 用 WEB_CONCURRENCY 调整。

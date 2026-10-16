@@ -68,7 +68,8 @@ const routes: RouteRecordRaw[] = [
         path: '/audit-logs',
         name: 'audit-logs',
         component: () => import('../views/AuditLogView.vue'),
-        meta: { title: '审计日志', icon: 'Document', requiresAuth: true, permission: 'auditlogs:read' },
+        // 权限码与后端 RBAC 种子保持一致（资源:动作），改名需同步后端
+        meta: { title: '审计日志', icon: 'Document', requiresAuth: true, permission: 'audit:read' },
       },
     ],
   },
@@ -96,8 +97,16 @@ router.beforeEach(async (to) => {
   if (authStore.user && (to.name === 'login' || to.name === 'register')) {
     return { name: 'dashboard' }
   }
+  // 注册页是「初始化首个管理员」入口，一旦已初始化就不应再可达，直接回登录页
+  if (to.name === 'register' && !authStore.user) {
+    if (authStore.needsBootstrap === null) await authStore.checkBootstrap()
+    if (authStore.needsBootstrap === false) {
+      return { name: 'login' }
+    }
+  }
   // 路由级权限守卫：缺少所需权限码时回退概览页（菜单会同步隐藏，正常不会走到这里）
-  if (to.meta.permission && !usePermissionStore().has(to.meta.permission)) {
+  // 用 can() 而非 has()：后者不含超管放行分支，会把超级管理员挡在门外
+  if (to.meta.permission && !usePermissionStore().can(to.meta.permission)) {
     return { name: 'dashboard' }
   }
   return true

@@ -10,7 +10,6 @@ from app.core.deps import bearer_scheme, get_current_user, get_redis
 from app.core.rbac import assert_permissions, require_permissions
 from app.core.result import Result
 from app.core.revocation import revoke_subject
-from app.core.settings import settings
 from app.models import User
 from app.repositories import rbac as rbac_repo
 from app.repositories import user as user_repo
@@ -61,28 +60,20 @@ async def _do_create(
     credentials: HTTPAuthorizationCredentials | None,
     redis: Any,
 ) -> UserOut:
-    """创建用户；空库自举判断与鉴权都在这里，新旧路径共用。"""
-    # 空库自举：开关打开且 users 表为空时，首个管理员可无凭证创建。
-    # 开关由 ALLOW_BOOTSTRAP 控制（PROD 默认关闭）——否则服务首次启动后
-    # 任何人抢先调用本接口即可成为管理员。
-    # get_current_user 是 async 依赖，这里在端点内手动 await（传入 request 以支持
-    # Cookie 来源令牌及其 CSRF 头校验，行为与依赖注入路径一致）。
-    actor: User | None = None
-    if not settings.bootstrap_allowed or not await user_service.needs_bootstrap(db):
-        actor = await get_current_user(request=request, credentials=credentials, db=db, redis=redis)
-        # 非自举场景：创建用户属于「管理用户」能力，需 user:write 权限
-        await assert_permissions(db, actor.id, "user:write")
+    """创建后台管理员账号；恒需 admin 令牌与 user:write 权限。
+
+    空库首个管理员改由 POST /api/v1/auth/bootstrap 承载（见 app/api/auth.py）：
+    两者语义不同，混在一个端点会让「创建用户」在空库时退化为免鉴权入口。
+    """
+    actor = await get_current_user(request=request, credentials=credentials, db=db, redis=redis)
+    await assert_permissions(db, actor.id, "user:write")
     created = await user_service.create_user(db, data)
     if created is None:
         raise HTTPException(status_code=409, detail="邮箱已被注册")
-    # 空库自举：首个管理员自动初始化 RBAC 角色权限并授予超级管理员
-    if actor is None:
-        await rbac_service.ensure_seeded(db)
-        await rbac_service.assign_role_to_user(db, created, rbac_service.SUPER_ADMIN_CODE)
     await audit_service.record(
         db,
         actor_type="admin",
-        actor_id=actor.id if actor else None,  # 自举场景无操作者
+        actor_id=actor.id,
         action=ACTION_CREATE_USER,
         target_type="user",
         target_id=str(created.id),
@@ -125,7 +116,7 @@ async def list_users(
     return result.ok(data=await _build_page(db, params))
 
 
-@router.post("/", summary="创建用户", response_model=Result[UserOut])
+@router.post("/", summary="创建用户（需 user:write）", response_model=Result[UserOut])
 async def create_user(
     user: CreateUser,
     request: Request,

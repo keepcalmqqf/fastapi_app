@@ -10,17 +10,53 @@ from app.core.deps import get_current_user, get_redis
 from app.core.result import Result
 from app.core.revocation import revoke_subject
 from app.core.settings import settings
+from app.login_guard import login_guard
 from app.models import User
 from app.schemas.rbac import UserPermissionsOut
 from app.schemas.token import TokenOut
-from app.schemas.user import ChangePassword, UserLogin
+from app.schemas.user import ChangePassword, CreateUser, UserLogin, UserOut
 from app.services import audit as audit_service
 from app.services import rbac as rbac_service
 from app.services import tokens as token_service
 from app.services import user as user_service
-from app.services.audit import ACTION_CHANGE_PASSWORD, ACTION_LOGIN_FAILED
+from app.services.audit import ACTION_CHANGE_PASSWORD, ACTION_CREATE_USER, ACTION_LOGIN_FAILED
 
 router = APIRouter(prefix="/auth", tags=["认证"])
+
+
+@router.post("/bootstrap", summary="初始化首个管理员（空库自举）", response_model=Result[UserOut])
+async def bootstrap(
+    data: CreateUser,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Result[UserOut]:
+    """空库且 ALLOW_BOOTSTRAP 打开时创建首个管理员，并授予超级管理员角色。
+
+    与 POST /api/v1/user/ 分离的原因：后者是「管理员账号管理」能力，恒需鉴权；
+    合在一个端点会让空库状态下的创建用户退化为免鉴权入口，任何人抢先调用即可
+    成为超管。前端可先查 /api/v1/info 的 needs_bootstrap 再决定是否展示该入口。
+    """
+    if not settings.bootstrap_allowed:
+        raise HTTPException(status_code=403, detail="管理员初始化已关闭")
+    # 先判空库再创建：与创建动作在同一连接上顺序执行，缩小并发抢建窗口
+    if not await user_service.needs_bootstrap(db):
+        raise HTTPException(status_code=409, detail="管理员已初始化")
+    created = await user_service.create_user(db, data)
+    if created is None:
+        raise HTTPException(status_code=409, detail="邮箱已被注册")
+    await rbac_service.ensure_seeded(db)
+    await rbac_service.assign_role_to_user(db, created, rbac_service.SUPER_ADMIN_CODE)
+    await audit_service.record(
+        db,
+        actor_type="admin",
+        actor_id=None,  # 自举场景尚无操作者
+        action=ACTION_CREATE_USER,
+        target_type="user",
+        target_id=str(created.id),
+        detail={"email": created.email, "bootstrap": True},
+        ip=audit_service.client_ip(request),
+    )
+    return result.ok(data=UserOut.model_validate(created), message="管理员初始化成功")
 
 
 @router.get("/permissions", summary="当前登录用户权限", response_model=Result[UserPermissionsOut])
@@ -51,6 +87,9 @@ async def login(
     db: AsyncSession = Depends(get_db),
     redis: Any = Depends(get_redis),
 ) -> Result[TokenOut]:
+    ip = audit_service.client_ip(request)
+    # 防爆破：连续失败达阈值后按「账号 + IP」锁定，先查锁再校验密码
+    await login_guard.ensure_not_locked(redis, subject=f"admin:{data.email.lower()}", ip=ip)
     user = await user_service.authenticate(db, data.email, data.password)
     if user is None:
         # 登录失败要留痕：连续失败是撞库/爆破的信号（限流仅按 IP 计数，审计可按时段复盘）
@@ -61,9 +100,11 @@ async def login(
             action=ACTION_LOGIN_FAILED,
             target_type="user",
             target_id=data.email,
-            ip=audit_service.client_ip(request),
+            ip=ip,
         )
+        await login_guard.register_failure(redis, subject=f"admin:{data.email.lower()}", ip=ip)
         raise HTTPException(status_code=401, detail="邮箱或密码错误")
+    await login_guard.reset(redis, subject=f"admin:{data.email.lower()}", ip=ip)
     if settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
         raise HTTPException(status_code=403, detail="邮箱未验证，请先完成邮箱验证")
     token_out = await token_service.issue_tokens(str(user.id), "admin", response, redis)

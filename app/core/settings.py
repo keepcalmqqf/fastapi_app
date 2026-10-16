@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     # 验证链接的基础地址（前端页面地址），邮件里拼成 {base}?token=xxx
     EMAIL_VERIFY_URL_BASE: str = "http://localhost:5173/verify-email"
 
+    # 登录防爆破：同一账号连续失败达阈值后锁定若干秒；来源 IP 维度默认关闭，
+    # 置为正数可同时限制同一出口的撞库（IP 层已有全局限流兜底，谨慎叠加）
+    LOGIN_MAX_FAILURES: int = 5
+    LOGIN_LOCKOUT_SECONDS: int = 900
+    LOGIN_IP_MAX_FAILURES: int = 0
+
     # 空库自举开关（None 时 DEV 开、PROD 关）：关闭后建号一律要求有效后台令牌。
     # PROD 下开放意味着服务首次启动后任何人都能抢建管理员，故默认关闭。
     ALLOW_BOOTSTRAP: bool | None = None
@@ -147,6 +153,10 @@ class Settings(BaseSettings):
                 raise ValueError("PROD 模式必须通过环境变量设置 SECRET_KEY")
             if self.MYSQL_PASSWORD == "123456":
                 raise ValueError("PROD 模式必须通过环境变量设置 MYSQL_PASSWORD")
+            # 空串比 None 更危险：compose 的 ${METRICS_TOKEN} 在 .env 漏配时会被替换成
+            # 空串，鉴权判定为「未配置」从而静默把 /metrics 变成公开端点
+            if self.ENABLE_METRICS and not self.METRICS_TOKEN:
+                raise ValueError("PROD 模式开启指标采集时必须设置 METRICS_TOKEN")
         return self
 
     @property

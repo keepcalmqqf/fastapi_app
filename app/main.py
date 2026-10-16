@@ -9,7 +9,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.api import register_routers
 from app.core.database import async_engine
 from app.core.exceptions import register_exception_handlers
-from app.core.middleware import cors_middleware
+from app.core.middleware import cors_middleware, response_headers_middleware
 from app.core.redis import create_redis
 from app.core.settings import settings
 from app.core.static import SPAStaticFiles
@@ -40,6 +40,7 @@ app = FastAPI(
 
 register_exception_handlers(app)
 cors_middleware(app)
+response_headers_middleware(app)
 # 只压缩超过 1KB 的响应：小响应压缩收益低却同样带来 CPU 开销与 BREACH 面
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 setup_plugins(app)
