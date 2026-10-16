@@ -10,6 +10,7 @@ import './styles/admin.css'
 import App from './App.vue'
 import router from './router'
 import { setupRequest } from './api/request'
+import { registerPermissionDirectives } from './directives/permission'
 
 const app = createApp(App)
 
@@ -19,6 +20,9 @@ for (const [name, component] of Object.entries(ElementPlusIcons)) {
 }
 
 setupRequest(router)
+
+// 注册权限控制指令：v-permission / v-role（菜单与按钮级鉴权）
+registerPermissionDirectives(app)
 
 app.use(createPinia())
 app.use(router)

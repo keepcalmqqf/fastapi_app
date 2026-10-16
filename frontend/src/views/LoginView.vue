@@ -36,6 +36,11 @@ async function onSubmit() {
       // 支持 401 跳转时携带的 redirect 回跳参数
       const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
       router.push(redirect)
+    } catch (err) {
+      // 登录失败（如邮箱或密码错误）：响应拦截器已将后端 message 带出，
+      // 这里捕获并展示，避免 401 被 finally 静默吞掉
+      const msg = err instanceof Error ? err.message : '登录失败，请重试'
+      ElMessage.error(msg)
     } finally {
       loading.value = false
     }

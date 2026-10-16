@@ -5,11 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import result
 from app.core.database import get_db
-from app.core.deps import get_current_member, get_current_user, get_redis
+from app.core.deps import get_current_member, get_redis
+from app.core.rbac import require_permissions
 from app.core.result import Result
 from app.core.revocation import revoke_subject
 from app.core.settings import settings
-from app.models import Member, User
+from app.models import Member
 from app.repositories import member as member_repo
 from app.schemas.member import (
     ChangeMemberPassword,
@@ -214,7 +215,7 @@ async def delete_me(
 async def list_members(
     params: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _=Depends(require_permissions("member:read")),
 ) -> Result[Page[MemberOut]]:
     items, total = await member_service.list_members(db, params.page, params.page_size)
     page = Page[MemberOut](

@@ -1,6 +1,7 @@
 import { login as apiLogin, logout as apiLogout } from '../api/auth'
 import type { User } from '../api/auth'
 import { getMe } from '../api/user'
+import { usePermissionStore } from './permission'
 
 export const useAuthStore = defineStore('auth', () => {
   // 登录用户信息；令牌只存在于 HttpOnly cookie，前端不感知
@@ -16,6 +17,8 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(email: string, password: string) {
     await apiLogin(email, password)
     await fetchMe()
+    // 登录成功后同步拉取权限（菜单/按钮级鉴权依赖）
+    await usePermissionStore().fetchPermissions()
   }
 
   async function logout() {
@@ -25,6 +28,7 @@ export const useAuthStore = defineStore('auth', () => {
       // 服务端登出失败也清空本地态
     } finally {
       user.value = null
+      usePermissionStore().reset()
     }
   }
 
@@ -32,6 +36,8 @@ export const useAuthStore = defineStore('auth', () => {
   async function restore() {
     try {
       await fetchMe()
+      // 恢复会话也要拉取权限，供导航守卫与菜单鉴权使用
+      await usePermissionStore().fetchPermissions()
     } catch {
       user.value = null
     } finally {

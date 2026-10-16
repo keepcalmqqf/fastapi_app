@@ -11,14 +11,30 @@ from app.core.result import Result
 from app.core.revocation import revoke_subject
 from app.core.settings import settings
 from app.models import User
+from app.schemas.rbac import UserPermissionsOut
 from app.schemas.token import TokenOut
 from app.schemas.user import ChangePassword, UserLogin
 from app.services import audit as audit_service
+from app.services import rbac as rbac_service
 from app.services import tokens as token_service
 from app.services import user as user_service
 from app.services.audit import ACTION_CHANGE_PASSWORD, ACTION_LOGIN_FAILED
 
 router = APIRouter(prefix="/auth", tags=["认证"])
+
+
+@router.get("/permissions", summary="当前登录用户权限", response_model=Result[UserPermissionsOut])
+async def my_permissions(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Result[UserPermissionsOut]:
+    """返回当前用户拥有的角色 code 与权限 code，供前端菜单/按钮级鉴权。"""
+    role_codes = await rbac_service.get_user_role_codes(db, current_user.id)
+    perm_codes = await rbac_service.get_user_permission_codes(db, current_user.id)
+    return result.ok(
+        data=UserPermissionsOut(role_codes=sorted(role_codes), permission_codes=sorted(perm_codes)),
+        message="请求成功",
+    )
 
 
 class RefreshBody(BaseModel):

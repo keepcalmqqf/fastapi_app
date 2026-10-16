@@ -7,16 +7,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import result
 from app.core.database import get_db
 from app.core.deps import bearer_scheme, get_current_user, get_redis
+from app.core.rbac import assert_permissions, require_permissions
 from app.core.result import Result
 from app.core.revocation import revoke_subject
 from app.core.settings import settings
 from app.models import User
+from app.repositories import rbac as rbac_repo
 from app.repositories import user as user_repo
 from app.schemas.page import Page, PageParams
+from app.schemas.rbac import RoleOut, SetUserRolesIn
 from app.schemas.user import CreateUser, UpdateUser, UserOut
 from app.schemas.verify import VerifyEmailIn
 from app.services import audit as audit_service
 from app.services import email_verify as email_verify_service
+from app.services import rbac as rbac_service
 from app.services import user as user_service
 from app.services.audit import (
     ACTION_CREATE_USER,
@@ -66,9 +70,15 @@ async def _do_create(
     actor: User | None = None
     if not settings.bootstrap_allowed or not await user_service.needs_bootstrap(db):
         actor = await get_current_user(request=request, credentials=credentials, db=db, redis=redis)
+        # 非自举场景：创建用户属于「管理用户」能力，需 user:write 权限
+        await assert_permissions(db, actor.id, "user:write")
     created = await user_service.create_user(db, data)
     if created is None:
         raise HTTPException(status_code=409, detail="邮箱已被注册")
+    # 空库自举：首个管理员自动初始化 RBAC 角色权限并授予超级管理员
+    if actor is None:
+        await rbac_service.ensure_seeded(db)
+        await rbac_service.assign_role_to_user(db, created, rbac_service.SUPER_ADMIN_CODE)
     await audit_service.record(
         db,
         actor_type="admin",
@@ -110,7 +120,7 @@ async def get_me(current_user: User = Depends(get_current_user)) -> Result[UserO
 async def list_users(
     params: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _=Depends(require_permissions("user:read")),
 ) -> Result[Page[UserOut]]:
     return result.ok(data=await _build_page(db, params))
 
@@ -132,7 +142,7 @@ async def create_user(
 async def get_user_by_id(
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _=Depends(require_permissions("user:read")),
 ) -> Result[UserOut]:
     return result.ok(data=UserOut.model_validate(await _load_user_or_404(db, user_id)))
 
@@ -143,7 +153,7 @@ async def update_user(
     data: UpdateUser,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permissions("user:write")),
     redis: Any = Depends(get_redis),
 ) -> Result[UserOut]:
     fields = data.model_dump(exclude_unset=True)
@@ -175,7 +185,7 @@ async def delete_user(
     user_id: int,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permissions("user:write")),
     redis: Any = Depends(get_redis),
 ) -> Result[None]:
     if user_id == current_user.id:
@@ -195,3 +205,35 @@ async def delete_user(
         ip=audit_service.client_ip(request),
     )
     return result.ok(message="删除成功")
+
+
+@router.get(
+    "/{user_id}/roles",
+    summary="获取用户所属角色",
+    response_model=Result[list[RoleOut]],
+)
+async def get_user_roles(
+    user_id: int,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permissions("user:read")),
+) -> Result[list[RoleOut]]:
+    await _load_user_or_404(db, user_id)
+    roles = await rbac_repo.get_user_roles(db, user_id, with_perms=True)
+    return result.ok(data=[RoleOut.model_validate(r) for r in roles], message="请求成功")
+
+
+@router.post(
+    "/{user_id}/roles",
+    summary="设置用户角色（整组替换）",
+    response_model=Result[list[RoleOut]],
+)
+async def set_user_roles_endpoint(
+    user_id: int,
+    data: SetUserRolesIn,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permissions("user:write")),
+) -> Result[list[RoleOut]]:
+    user = await _load_user_or_404(db, user_id)
+    await rbac_service.set_user_roles(db, user, data.role_codes)
+    roles = await rbac_repo.get_user_roles(db, user_id, with_perms=True)
+    return result.ok(data=[RoleOut.model_validate(r) for r in roles], message="角色已更新")

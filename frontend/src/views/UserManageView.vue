@@ -1,12 +1,25 @@
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
-import { listUsers, updateUser, deleteUser } from '../api/user'
+import { listUsers, createUser, updateUser, deleteUser } from '../api/user'
 import type { AdminUser } from '../api/user'
+import { listRoles, getUserRoles, setUserRoles } from '../api/rbac'
+import type { Role } from '../api/rbac'
 import { useAuthStore } from '../stores/auth'
 import { formatTime } from '../utils/datetime'
 
 const authStore = useAuthStore()
+
+// 角色清单（分配角色对话框用）
+const allRoles = ref<Role[]>([])
+async function loadRoles() {
+  try {
+    const res = await listRoles()
+    allRoles.value = res.data
+  } catch {
+    // 角色清单读取失败不影响用户列表
+  }
+}
 
 const loading = ref(false)
 const users = ref<AdminUser[]>([])
@@ -48,6 +61,68 @@ const editRules: FormRules = {
     { required: true, message: '请输入昵称', trigger: 'blur' },
     { min: 2, max: 32, message: '昵称长度为 2-32 位', trigger: 'blur' },
   ],
+}
+
+// 添加用户对话框
+const createVisible = ref(false)
+const savingCreate = ref(false)
+const createFormRef = ref<FormInstance>()
+const createForm = reactive({ name: '', email: '', password: '', is_active: true })
+
+// 校验规则与后端 CreateUser 对齐：昵称 2-32，邮箱格式，密码 8-64 且必须含字母和数字
+const createRules: FormRules = {
+  name: [
+    { required: true, message: '请输入昵称', trigger: 'blur' },
+    { min: 2, max: 32, message: '昵称长度为 2-32 位', trigger: 'blur' },
+  ],
+  email: [
+    { required: true, message: '请输入邮箱', trigger: 'blur' },
+    { type: 'email', message: '邮箱格式不正确', trigger: 'blur' },
+  ],
+  password: [
+    { required: true, message: '请输入密码', trigger: 'blur' },
+    { min: 8, max: 64, message: '密码长度为 8-64 位', trigger: 'blur' },
+    {
+      validator: (_rule, value, callback) => {
+        if (value && !(/\p{L}/u.test(value) && /\d/.test(value))) {
+          callback(new Error('密码必须同时包含字母和数字'))
+        } else {
+          callback()
+        }
+      },
+      trigger: 'blur',
+    },
+  ],
+}
+
+function openCreate() {
+  createForm.name = ''
+  createForm.email = ''
+  createForm.password = ''
+  createForm.is_active = true
+  createVisible.value = true
+}
+
+async function onCreate() {
+  if (!createFormRef.value) return
+  await createFormRef.value.validate()
+  savingCreate.value = true
+  try {
+    await createUser({
+      name: createForm.name.trim(),
+      email: createForm.email.trim(),
+      password: createForm.password,
+      is_active: createForm.is_active,
+    })
+    ElMessage.success('添加成功')
+    createVisible.value = false
+    // 列表按 id 升序，新用户在末页，跳到最后一页以便看到刚添加的用户
+    const lastPage = Math.max(1, Math.ceil((total.value + 1) / pageSize.value))
+    if (lastPage !== page.value) page.value = lastPage
+    loadUsers()
+  } finally {
+    savingCreate.value = false
+  }
 }
 
 function openEdit(row: AdminUser) {
@@ -93,7 +168,43 @@ async function onDelete(row: AdminUser) {
   loadUsers()
 }
 
-onMounted(loadUsers)
+// 分配角色
+const roleVisible = ref(false)
+const savingRole = ref(false)
+const roleUserId = ref<number | null>(null)
+const roleUserName = ref('')
+const checkedRoles = ref<string[]>([])
+
+async function openAssignRole(row: AdminUser) {
+  roleUserId.value = row.id
+  roleUserName.value = row.name ?? row.email
+  checkedRoles.value = []
+  roleVisible.value = true
+  try {
+    const res = await getUserRoles(row.id)
+    checkedRoles.value = res.data.map((r) => r.code)
+  } catch {
+    // 读取失败保留空选项，用户仍可保存（整组替换）
+  }
+}
+
+async function onSaveRole() {
+  if (roleUserId.value === null) return
+  savingRole.value = true
+  try {
+    await setUserRoles(roleUserId.value, checkedRoles.value)
+    ElMessage.success('角色已更新')
+    roleVisible.value = false
+    loadUsers()
+  } finally {
+    savingRole.value = false
+  }
+}
+
+onMounted(() => {
+  loadUsers()
+  loadRoles()
+})
 </script>
 
 <template>
@@ -103,6 +214,7 @@ onMounted(loadUsers)
         <div class="admin-toolbar">
           <span class="admin-toolbar__title">用户管理</span>
           <div class="admin-toolbar__actions">
+            <el-button type="primary" @click="openCreate">添加用户</el-button>
             <el-button @click="loadUsers">刷新</el-button>
           </div>
         </div>
@@ -122,8 +234,11 @@ onMounted(loadUsers)
         <el-table-column label="创建时间" width="180">
           <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="160" align="center" fixed="right">
+        <el-table-column label="操作" width="260" align="center" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" v-permission="'role:write'" @click="openAssignRole(row)">
+              分配角色
+            </el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button
               size="small"
@@ -172,9 +287,74 @@ onMounted(loadUsers)
         <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="createVisible" title="添加用户" width="420px">
+      <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-width="70px">
+        <el-form-item label="昵称" prop="name">
+          <el-input v-model="createForm.name" maxlength="32" placeholder="2-32 位昵称" />
+        </el-form-item>
+        <el-form-item label="邮箱" prop="email">
+          <el-input v-model="createForm.email" placeholder="登录邮箱" />
+        </el-form-item>
+        <el-form-item label="密码" prop="password">
+          <el-input
+            v-model="createForm.password"
+            type="password"
+            show-password
+            maxlength="64"
+            placeholder="8-64 位，需包含字母和数字"
+          />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-switch
+            v-model="createForm.is_active"
+            active-text="启用"
+            inactive-text="禁用"
+            inline-prompt
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingCreate" @click="onCreate">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="roleVisible" title="分配角色" width="460px">
+      <div class="assign-role__title">为用户「{{ roleUserName }}」分配角色（整组替换）</div>
+      <el-checkbox-group v-model="checkedRoles">
+        <el-checkbox
+          v-for="r in allRoles"
+          :key="r.id"
+          :value="r.code"
+          class="assign-role__item"
+          :disabled="r.is_system"
+        >
+          {{ r.name }}
+          <span class="assign-role__code">{{ r.code }}</span>
+        </el-checkbox>
+      </el-checkbox-group>
+      <template #footer>
+        <el-button @click="roleVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingRole" @click="onSaveRole">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 /* 页面容器、工具栏与分页样式统一走 src/styles/admin.css */
+.assign-role__title {
+  margin-bottom: 12px;
+  color: var(--el-text-color-regular);
+}
+.assign-role__item {
+  margin-right: 16px;
+  margin-bottom: 8px;
+}
+.assign-role__code {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  margin-left: 4px;
+}
 </style>

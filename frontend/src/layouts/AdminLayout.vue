@@ -2,6 +2,7 @@
 // vue / vue-router 的 API 与 src/composables 下的项目 composable 均由自动导入提供
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
+import { usePermissionStore } from '../stores/permission'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,9 +16,15 @@ const { online } = useConnectionStatus()
 const collapsed = useStorage('admin.sidebar.collapsed', false)
 
 // 侧边栏菜单直接由路由表生成，新增页面只需在 router 里加一条带 meta.title 的路由
+// 同时按权限过滤：用户缺少某菜单所需权限时，菜单项自动隐藏
+const permissionStore = usePermissionStore()
 const menuItems = computed(() => {
   const root = router.options.routes.find((item) => item.path === '/')
-  return (root?.children ?? []).filter((item) => item.meta?.title)
+  return (root?.children ?? []).filter((item) => {
+    if (!item.meta?.title) return false
+    if (item.meta.permission && !permissionStore.has(item.meta.permission)) return false
+    return true
+  })
 })
 
 // 面包屑：首页 + 当前命中的标题链路

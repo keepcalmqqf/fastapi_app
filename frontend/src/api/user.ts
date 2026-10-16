@@ -41,3 +41,13 @@ export function updateUser(id: number, data: { name?: string; is_active?: boolea
 export function deleteUser(id: number) {
   return request.delete<never, ApiResult<null>>(`/api/v1/user/${id}`)
 }
+
+// 创建用户（管理员后台新增）。对应后端 CreateUser：name / email / password / is_active
+export function createUser(data: {
+  name: string
+  email: string
+  password: string
+  is_active: boolean
+}) {
+  return request.post<never, ApiResult<AdminUser>>('/api/v1/user/', data)
+}
