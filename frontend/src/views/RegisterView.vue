@@ -7,9 +7,13 @@ import { translate as t } from '../plugins/i18n'
 const router = useRouter()
 const authStore = useAuthStore()
 
-// 本页只在「仍需初始化首个管理员」时可用；已初始化则不应出现在这里
-if (authStore.needsBootstrap === null) await authStore.checkBootstrap()
-if (authStore.needsBootstrap === false) router.replace({ name: 'login' })
+// 本页只在「仍需初始化首个管理员」时可用；已初始化则回登录页。
+// 这里不能用顶层 await：那会让 setup 返回 Promise，父组件树没有 <Suspense> 时组件不渲染。
+// 同样的判断在 router/index.ts 的 beforeEach 里已经做过一次，此处只作组件级兜底
+onMounted(async () => {
+  if (authStore.needsBootstrap === null) await authStore.checkBootstrap()
+  if (authStore.needsBootstrap === false) router.replace({ name: 'login' })
+})
 
 const formRef = ref<FormInstance>()
 const loading = ref(false)

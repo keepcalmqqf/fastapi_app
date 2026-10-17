@@ -5,6 +5,7 @@ import type { Router } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 // i18n 插件：请求带上当前语种，后端（开启 i18n 插件后）按此返回对应语言的 message
 import { currentLocale, translate } from '../plugins/i18n'
+import { hasSession, markSession } from '../utils/session'
 
 // 后端统一响应结构：{"code": 200, "data": ..., "message": "..."}
 export interface ApiResult<T = unknown> {
@@ -83,6 +84,8 @@ function rawRefresh(): Promise<void> {
 function clearSessionAndRedirect(message: string) {
   const authStore = useAuthStore()
   authStore.user = null
+  // refresh 都换不出新令牌，说明会话确实没了，清掉痕迹以免后续请求继续徒劳刷新
+  markSession(false)
   const current = router?.currentRoute.value
   if (router && !redirectingToLogin && current?.name !== 'login' && current?.meta?.requiresAuth) {
     redirectingToLogin = true
@@ -95,11 +98,19 @@ function clearSessionAndRedirect(message: string) {
   }
 }
 
-// 未认证处理：single-flight 静默刷新，成功后重试原请求
+// 未认证处理：single-flight 静默刷新，成功后重试原请求（只重试一次）
 async function handleUnauthorized(
   error: AxiosError<ApiResult>,
   message: string,
 ): Promise<unknown> {
+  const config = error.config as (AxiosRequestConfig & { _retried?: boolean }) | undefined
+  // 刷新后重试仍 401（如账号被停用/主体被撤销）时不再循环刷新，直接按未登录处理
+  if (config?._retried) {
+    clearSessionAndRedirect(translate('登录已过期，请重新登录'))
+    const retriedError = new Error(message) as AuthError
+    retriedError.isAuthError = true
+    throw retriedError
+  }
   if (!refreshPromise) {
     refreshPromise = rawRefresh().finally(() => {
       refreshPromise = null
@@ -113,7 +124,10 @@ async function handleUnauthorized(
     authError.isAuthError = true
     throw authError
   }
-  return request(error.config as AxiosRequestConfig)
+  // 刷新成功：会话仍然有效，补记痕迹并重试一次
+  markSession(true)
+  if (config) config._retried = true
+  return request(config as AxiosRequestConfig)
 }
 
 // 响应拦截器：解包统一响应，失败时统一提示
@@ -138,6 +152,13 @@ request.interceptors.response.use(
       return Promise.reject(error)
     }
     if (!isNoRetryPath(error.config?.url)) {
+      // 本地没有任何会话痕迹、且当前也没有登录用户时，401 就是「未登录」：
+      // 浏览器不会带 refresh cookie，静默刷新必然再次 401，直接按未登录返回
+      if (!hasSession() && !useAuthStore().user) {
+        const anonymousError = new Error(message) as AuthError
+        anonymousError.isAuthError = true
+        return Promise.reject(anonymousError)
+      }
       return handleUnauthorized(error, message)
     }
     // refresh 失败时清空登录态并跳转；login 失败停留在当前页（静默，登录页自行展示错误）

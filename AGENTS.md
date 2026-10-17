@@ -144,6 +144,7 @@ uv run python scripts/seed_rbac.py
 - **账号级撤销**（`app/core/revocation.py`）：管理员 `DELETE /api/v1/user/{user_id}` 或 `PATCH /api/v1/user/{user_id}` 置 `is_active=False`、以及会员 `DELETE /api/v1/member/me` 时，调用 `revoke_subject(aud, subject, redis)` 写一条撤销时间点（`revoke:{aud}:{subject}`，TTL=refresh 有效期）。`deps._resolve_subject` 与 `rotate_refresh_token` 都会校验：**签发时间（`iat`）不晚于撤销时间点的令牌一律 401**。这样一次写入即可作废该主体在**所有设备**上的全部令牌（access + refresh）——逐 jti 撤销做不到这点，因为 jti 无法由主体反查；且账号重新启用后旧会话不会复活。`iat` 为秒级，故用 `<=` 比较（宁可误杀撤销后同秒签发的令牌，也不漏放）。登出**不应**调用它，否则会误踢该账号的其他设备。
 - **取令牌顺序**（`app/core/deps.py`）：Authorization Bearer 优先，其次 `access_token` Cookie。**CSRF 防护**：Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须带 `X-Requested-With: XMLHttpRequest`，否则 403；Bearer 来源不受此约束；黑名单命中 401；Redis 异常 fail-open 记日志。
 - **依赖注入**：`get_current_user`/`get_current_member` 是 **async def**，FastAPI DI 原生支持；`/api/v1/user/` 自举守卫在 async 端点内手动 `await get_current_user(request=..., credentials=..., db=..., redis=...)`（传入 request 以保留 Cookie 令牌与 CSRF 校验），禁止再用同步事件循环变通。
+- **前端会话痕迹**（`frontend/src/utils/session.ts`）：令牌是 HttpOnly Cookie，前端无法直接判断是否登录，故用 localStorage 标记 `auth.has_session` 记录「本站是否曾建立过会话」——登录成功/静默刷新成功写入，登出与刷新失败清除。它只决定「要不要发请求」，不参与任何鉴权判断（伪造它拿不到访问权限）：路由守卫的会话恢复在无痕迹时跳过 `/user/me` 探测，401 拦截器在无痕迹且本地无用户时直接判未登录、不做静默刷新。否则未登录访问 `/login`、`/register` 会打出两条必然 401 的请求（`/user/me` → 静默刷新 → `/auth/refresh` 再 401）。副作用：升级后首次进站需重新登录一次。
 - **软删除**：`SoftDeleteMixin`（`deleted_at`，indexed），repository 统一过滤未删除记录；软删不释放邮箱唯一约束（同邮箱再注册 409，并发撞唯一约束由 service 层 IntegrityError 兜底转 409）。
 
 ## 关键接口语义
