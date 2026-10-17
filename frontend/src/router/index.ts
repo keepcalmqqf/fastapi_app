@@ -65,6 +65,13 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '权限点', icon: 'Key', requiresAuth: true, permission: 'permission:read' },
       },
       {
+        path: '/tasks',
+        name: 'tasks',
+        component: () => import('../views/TaskManageView.vue'),
+        // 异步任务控制台：读观测数据需 task:read（投递另需 task:write，页面内按按钮级控制）
+        meta: { title: '异步任务', icon: 'Timer', requiresAuth: true, permission: 'task:read' },
+      },
+      {
         path: '/audit-logs',
         name: 'audit-logs',
         component: () => import('../views/AuditLogView.vue'),

@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
 import pytest
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.core.settings import settings
 from app.plugins import tasks as tasks_plugin
-from app.plugins.tasks import TaskManager, TaskState
+from app.plugins.tasks import TaskManager, TaskState, require_task_read, require_task_write
 
 
 @asynccontextmanager
@@ -30,9 +31,15 @@ async def _tasks_lifespan(app: FastAPI):
 
 
 def _make_tasks_app() -> FastAPI:
-    """构造一个挂载了任务插件、并接管 worker 生命周期的应用（用于集成测试）。"""
+    """构造一个挂载了任务插件、并接管 worker 生命周期的应用（用于集成测试）。
+
+    观测/投递接口挂了 task:read / task:write 权限守卫，这里统一用 dependency_overrides
+    放行（用例关注的是任务链路本身，鉴权由 RBAC 用例覆盖）。
+    """
     tasks_plugin.task_manager.reset()
     app = FastAPI(lifespan=_tasks_lifespan)
+    app.dependency_overrides[require_task_read] = lambda: None
+    app.dependency_overrides[require_task_write] = lambda: None
     tasks_plugin.setup(app)
     return app
 
@@ -217,6 +224,54 @@ def test_status_endpoint_via_client(monkeypatch):
         assert body["data"]["enabled"] is True
         assert body["data"]["workers"] == 3
         assert isinstance(body["data"]["recent"], list)
+
+
+def test_dispatch_endpoint_submits_named_task(monkeypatch):
+    """手动投递接口：投递已注册任务 → 经 job_id 能查到终态 success。"""
+    monkeypatch.setattr(settings, "ENABLE_TASKS", True)
+    app = _make_tasks_app()
+    done: list[int] = []
+
+    async def echo(value: int) -> None:
+        done.append(value)
+
+    tasks_plugin.task_manager.register("echo", echo)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/tasks/dispatch", json={"name": "echo", "args": [7], "retries": 1}
+        )
+        assert resp.status_code == 200
+        job_id = resp.json()["data"]["job_id"]
+        assert job_id
+        # 轮询观测接口直到任务进入终态（worker 跑在 TestClient 的循环里，这里只能经 HTTP 等）
+        state = ""
+        for _ in range(100):
+            body = client.get("/api/v1/tasks", params={"job_id": job_id}).json()["data"]
+            state = body["job"]["state"]
+            if state in ("success", "failed"):
+                break
+            time.sleep(0.05)
+        assert state == "success"
+    assert done == [7]
+
+
+def test_dispatch_unknown_task_returns_400(monkeypatch):
+    monkeypatch.setattr(settings, "ENABLE_TASKS", True)
+    app = _make_tasks_app()
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/tasks/dispatch", json={"name": "not_registered"})
+    assert resp.status_code == 400
+
+
+def test_observation_endpoints_require_permission(monkeypatch):
+    """未放行守卫时，观测与投递接口应被鉴权拦下（未带令牌即 401）。"""
+    monkeypatch.setattr(settings, "ENABLE_TASKS", True)
+    app = FastAPI(lifespan=_tasks_lifespan)
+    tasks_plugin.setup(app)
+    with TestClient(app) as client:
+        assert client.get("/api/v1/tasks").status_code == 401
+        assert client.post("/api/v1/tasks/dispatch", json={"name": "x"}).status_code == 401
 
 
 def test_disabled_plugin_registers_nothing(monkeypatch):

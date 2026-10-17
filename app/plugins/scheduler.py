@@ -37,7 +37,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from croniter import croniter
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from redis.asyncio import Redis
 
 from app.api import API_V1_PREFIX
@@ -45,7 +45,9 @@ from app.core import result
 from app.core.redis import create_redis
 from app.core.result import Result
 from app.core.settings import settings
+from app.models import User
 from app.models.base import utc_now
+from app.plugins import tasks as tasks_plugin
 from app.plugins.tasks import task_manager
 
 logger = logging.getLogger("fastapi_app")
@@ -326,10 +328,12 @@ def setup(app: FastAPI) -> None:
 
     @_router.get(
         "",
-        summary="定时计划列表：cron 表达式、上次/下次触发时间、最近投递的 job_id",
+        summary="定时计划列表（需 task:read）：cron 表达式、上次/下次触发时间、最近投递的 job_id",
         response_model=Result[dict],
     )
-    async def scheduler_status() -> Result[dict]:
+    async def scheduler_status(
+        _: User = Depends(tasks_plugin.require_task_read),
+    ) -> Result[dict]:
         return result.ok(data=scheduler.status(), message="请求成功")
 
     # 手动带版本前缀（插件不在 app.api 包内，不会被自动发现），与业务接口保持一致

@@ -28,6 +28,9 @@ _SEED_PERMISSIONS: tuple[tuple[str, str, str, str], ...] = (
     ("permission:read", "查看权限", "permission", "read"),
     # 审计日志含操作者、来源 IP 与变更详情，属敏感数据，必须鉴权后才能读取
     ("audit:read", "查看审计日志", "audit", "read"),
+    # 异步任务控制台：读为观测（任务名、队列深度、失败原因），写为手动投递具名任务
+    ("task:read", "查看异步任务", "task", "read"),
+    ("task:write", "投递异步任务", "task", "write"),
 )
 
 # 自举/种子预置的角色：(code, name, 该角色拥有的权限 code 列表, is_system)
@@ -37,7 +40,15 @@ _SEED_ROLES: tuple[tuple[str, str, tuple[str, ...], bool], ...] = (
     (
         "admin",
         "管理员",
-        ("user:read", "user:write", "member:read", "member:write", "audit:read"),
+        (
+            "user:read",
+            "user:write",
+            "member:read",
+            "member:write",
+            "audit:read",
+            "task:read",
+            "task:write",
+        ),
         True,
     ),
     ("viewer", "访客", ("user:read", "member:read"), True),

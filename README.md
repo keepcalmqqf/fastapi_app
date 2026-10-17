@@ -133,6 +133,9 @@ cd frontend && npm run build   # 产出 frontend/dist
 | POST | `/api/v1/user/verify-email` | 验证后台账号邮箱 |
 | POST | `/api/v1/user/resend-verification` | 重发后台账号验证邮件（admin 令牌） |
 | GET | `/api/v1/audit/logs` | 分页查询审计日志（admin 令牌，可按 `action`/`actor_id` 过滤，按时间倒序） |
+| GET | `/api/v1/tasks` | 异步任务观测：`ENABLE_TASKS` 开启后返回运行状态与最近任务（需 `task:read`；`?job_id=` 查单条，`?limit=` 条数 1-100） |
+| POST | `/api/v1/tasks/dispatch` | 手动投递一个已注册的具名任务，返回 `job_id`（需 `task:write`） |
+| GET | `/api/v1/scheduler` | 定时计划列表（cron、上次/下次触发时间、最近 job_id，需 `task:read`） |
 
 所有业务接口统一挂在 `/api/v1` 版本前缀下（由 `register_routers` 自动添加，新增模块无需关心），
 路径风格统一为 REST：集合资源用斜杠结尾形式（`GET /api/v1/user/`、`POST /api/v1/user/`），
@@ -146,6 +149,8 @@ cd frontend && npm run build   # 产出 frontend/dist
 邮箱验证：会员注册会自动投递验证邮件，`POST /api/v1/member/verify-email` 凭 token 完成验证。**默认不强制**（`REQUIRE_EMAIL_VERIFICATION=false`，未验证也能登录），置为 `true` 后未验证账号登录返回 403。脚手架不内置 SMTP，`app/services/mailer.py` 的默认实现只把验证链接写进日志，接入真实邮件服务时替换该函数即可。
 
 审计日志：账号创建/更新/删除、改密、会员注销、登录失败都会写入 `audit_log`，用 `GET /api/v1/audit/logs` 查询。审计有自己的事务边界（写完立即提交），写入失败只记日志、不影响业务结果。
+
+异步任务：`ENABLE_TASKS=true` 后后台「异步任务」页即可观测——运行指标（执行中/队列积压/队列深度/消费者）、最近任务列表（状态、耗时、错误信息，可按 `job_id` 回看单条）、`@scheduler.cron` 登记的定时计划，并可在页面上手动投递已注册的具名任务（需 `task:write`）。插件未启用时接口是 404，页面显示「未启用」空态而不是报错。详见下方「异步任务控制台」。
 
 认证要点：access token 默认 30 分钟、refresh token 默认 7 天；后台（`aud=admin`）与会员（`aud=member`）令牌互不通用。access token 带 `type="access"`、refresh token 带 `type="refresh"`，**受保护接口只接受访问令牌，refresh 令牌直接当访问令牌用一律 401**（否则登出后凭长效 refresh 令牌仍可操作后台接口）。登出只让当前设备的令牌失效；**停用/软删用户、会员注销则撤销该账号全部令牌（含其他设备）**，重新启用也不会复活旧会话。取令牌顺序为 `Authorization: Bearer` 优先、其次 `access_token` Cookie；**Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须携带 `X-Requested-With: XMLHttpRequest`，否则 403**（Bearer 来源不受此约束）。
 
@@ -222,6 +227,24 @@ from app.plugins.cache import cached
 @cached("user", ttl=300)
 async def heavy_query(user_id: int): ...
 ```
+
+## 异步任务控制台
+
+`ENABLE_TASKS=true`（可选 `ENABLE_SCHEDULER=true`）后，后台侧边栏出现「异步任务」页（`frontend/src/views/TaskManageView.vue`），把两个插件的观测接口拼成一张运维面板：
+
+| 区块 | 数据来源 | 说明 |
+| --- | --- | --- |
+| 运行指标 | `GET /api/v1/tasks` | 后端类型、`执行中`、`队列积压/待处理`、`队列深度/已跟踪`、`Worker/消费者`；memory 与 redis 两种后端展示各自有意义的指标 |
+| 定时计划 | `GET /api/v1/scheduler` | `ENABLE_SCHEDULER` 开启时展示 cron、时区、上次/下次触发时间、最近一次投递的 job_id |
+| 最近任务 | `GET /api/v1/tasks` | 任务名、状态、重试次数、入队时间、耗时；详情抽屉里看错误与返回值；可按 `job_id` 回看单条（redis 后端无全局列表时的定位入口） |
+| 手动投递 | `POST /api/v1/tasks/dispatch` | 选一个已注册任务名（`registered` 列表）+ JSON 参数投递，便于验证链路（需 `task:write`） |
+
+要点：
+
+- **权限**：观测需 `task:read`、投递需 `task:write`（种子内置，`admin` 两者都有，`viewer` 都没有）；菜单与按钮按同一套权限码控制。
+- **插件未启用**：接口不存在（404），页面渲染「未启用」空态并提示开启方式，不弹错误提示；概览页的异步任务卡片也会自动隐藏。
+- **memory 后端**：记录只在进程内存（最近 1000 条），重启即丢；刷新页面看到的是当前进程的任务。
+- **redis 后端**：Web 进程只投递/查询，**消费由 `python -m app.plugins.tasks_worker` 独立进程完成**；投递时额外把 job_id 写入有上限的 `task:recent` 索引，页面才能列出「最近任务」。没起 worker 时会看到「待处理」只增不减。
 
 ## 数据库迁移
 

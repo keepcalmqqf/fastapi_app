@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { listAuditLogs } from '../api/audit'
 import type { AuditLog } from '../api/audit'
+import { getTaskStatus, PluginDisabledError } from '../api/task'
 import { listMembers } from '../api/member'
 import { listUsers } from '../api/user'
 import { useAuthStore } from '../stores/auth'
@@ -17,16 +18,25 @@ const permissionStore = usePermissionStore()
 const canReadUsers = computed(() => permissionStore.can('user:read'))
 const canReadMembers = computed(() => permissionStore.can('member:read'))
 const canReadAudit = computed(() => permissionStore.can('audit:read'))
+const canReadTasks = computed(() => permissionStore.can('task:read'))
 
 // 最近一次成功刷新的时间（UTC ISO）
 const lastUpdated = ref<string | null>(null)
 
 // 统计值：加载中/失败统一展示为 '-'，避免用假数据占位
-const stats = reactive<{ users: number | string; members: number | string; logs: number | string }>({
+const stats = reactive<{
+  users: number | string
+  members: number | string
+  logs: number | string
+  tasks: number | string
+}>({
   users: '-',
   members: '-',
   logs: '-',
+  tasks: '-',
 })
+// 任务插件未启用（接口 404）时不展示异步任务卡片
+const tasksAvailable = ref(false)
 
 const recentLogs = ref<AuditLog[]>([])
 const loading = ref(false)
@@ -62,7 +72,20 @@ const statCards = computed(
         route: 'audit-logs',
         permission: 'audit:read',
       },
-    ].filter((card) => permissionStore.can(card.permission)),
+      {
+        key: 'tasks',
+        // 值为「执行中 / 待处理」，与任务页口径一致
+        label: '异步任务（执行中/待处理）',
+        value: stats.tasks,
+        icon: 'Timer',
+        color: 'var(--el-color-danger)',
+        route: 'tasks',
+        permission: 'task:read',
+      },
+    ].filter(
+      (card) =>
+        permissionStore.can(card.permission) && (card.key !== 'tasks' || tasksAvailable.value),
+    ),
 )
 
 async function loadOverview() {
@@ -70,15 +93,27 @@ async function loadOverview() {
   try {
     // 各统计相互独立，任一失败不影响其余卡片展示；
     // 无权限的接口直接不请求（结果保持为 '-'），避免 403 提示与无效轮询
-    const [usersRes, membersRes, logsRes] = await Promise.allSettled([
+    const [usersRes, membersRes, logsRes, tasksRes] = await Promise.allSettled([
       canReadUsers.value ? listUsers(1, 1) : Promise.reject(new Error('no-permission')),
       canReadMembers.value ? listMembers(1, 1) : Promise.reject(new Error('no-permission')),
       canReadAudit.value
         ? listAuditLogs({ page: 1, page_size: 10 })
         : Promise.reject(new Error('no-permission')),
+      canReadTasks.value ? getTaskStatus({ limit: 1 }) : Promise.reject(new Error('no-permission')),
     ])
     if (usersRes.status === 'fulfilled') stats.users = usersRes.value.data.total
     if (membersRes.status === 'fulfilled') stats.members = membersRes.value.data.total
+    if (tasksRes.status === 'fulfilled') {
+      const data = tasksRes.value.data
+      // memory 看队列积压，redis 看消费组待处理（已派发未 ACK）
+      const backlog = data.backend === 'redis' ? (data.pending ?? 0) : data.queue_size
+      stats.tasks = `${data.running ?? 0} / ${backlog}`
+      tasksAvailable.value = true
+    } else if (tasksRes.reason instanceof PluginDisabledError) {
+      // 插件未启用：整张卡片不展示，而不是留一个 '-' 让人误以为服务异常
+      stats.tasks = '-'
+      tasksAvailable.value = false
+    }
     if (logsRes.status === 'fulfilled') {
       stats.logs = logsRes.value.data.total
       recentLogs.value = logsRes.value.data.items

@@ -53,6 +53,7 @@ class FakeStreamRedis:
         self.streams: dict[str, list[tuple[str, dict]]] = {}
         self.groups: dict[tuple[str, str], dict] = {}
         self.hashes: dict[str, dict[str, str]] = {}
+        self.zsets: dict[str, dict[str, float]] = {}
         self._seq = 0
 
     def _next_id(self) -> str:
@@ -133,6 +134,32 @@ class FakeStreamRedis:
             _eid, fields = self._find(stream, eid)
             claimed.append(eid if justid else (eid, dict(fields)))
         return "0-0", claimed, []
+
+    async def zadd(self, key, mapping):
+        z = self.zsets.setdefault(key, {})
+        z.update(mapping)
+        return len(mapping)
+
+    async def zremrangebyrank(self, key, start, stop):
+        z = self.zsets.get(key)
+        if not z:
+            return 0
+        ordered = [m for m, _ in sorted(z.items(), key=lambda kv: kv[1])]
+        n = len(ordered)
+        lo = start if start >= 0 else max(0, n + start)
+        hi = stop if stop >= 0 else n + stop
+        removed = ordered[lo : hi + 1]
+        for member in removed:
+            z.pop(member, None)
+        return len(removed)
+
+    async def zrevrange(self, key, start, stop):
+        z = self.zsets.get(key)
+        if not z:
+            return []
+        ordered = [m for m, _ in sorted(z.items(), key=lambda kv: (-kv[1],))]
+        hi = None if stop < 0 else stop
+        return ordered[start:hi] if hi is None else ordered[start : hi + 1]
 
     async def hset(self, key, mapping=None, **kw):
         self.hashes.setdefault(key, {}).update(mapping or {})
@@ -216,6 +243,29 @@ def test_redis_astatus(redis_backend):
     assert status["queue_len"] == 1
     assert status["pending"] == 1
     assert status["consumers"] == 1
+
+
+def test_redis_recent_index_lists_latest_jobs(redis_backend):
+    """redis 后端没有全局列表概念：投递时写 ZSET 索引，recent() 据此还原最近记录。"""
+    fake = FakeStreamRedis()
+    mgr = _mk_manager(fake)
+    job_ids: list[str] = []
+
+    async def scenario() -> None:
+        for i in range(3):
+            job_ids.append(await mgr.submit_named("send_welcome_email", i))
+            # 间隔保证 ZSET score（入队时间戳）严格递增，顺序断言才稳定
+            await asyncio.sleep(0.01)
+
+    _run(scenario())
+
+    items = _run(mgr.recent(2))
+    assert [item["job_id"] for item in items] == [job_ids[2], job_ids[1]]
+    assert items[0]["name"] == "send_welcome_email"
+    assert items[0]["state"] == "queued"
+    # 索引独立于结果哈希：哈希被清掉（TTL 到期）的条目不再出现在列表里
+    fake.hashes.clear()
+    assert _run(mgr.recent(10)) == []
 
 
 def test_worker_process_success(redis_backend, clean_registry):

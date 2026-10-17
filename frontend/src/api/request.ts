@@ -42,7 +42,7 @@ const request = axios.create({
 const NO_RETRY_PATHS = ['/api/v1/auth/refresh', '/api/v1/auth/login', '/api/v1/auth/bootstrap']
 
 // 可选能力的探测接口：404 表示插件未启用，属正常分支，不该弹错误提示
-const SILENT_404_PATHS = ['/api/v1/i18n/']
+const SILENT_404_PATHS = ['/api/v1/i18n/', '/api/v1/tasks', '/api/v1/scheduler']
 
 function isNoRetryPath(url?: string): boolean {
   return !!url && NO_RETRY_PATHS.some((p) => url.includes(p))

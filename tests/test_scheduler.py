@@ -19,7 +19,7 @@ from app.core.settings import settings
 from app.models.base import utc_now
 from app.plugins import scheduler as scheduler_plugin
 from app.plugins.scheduler import Scheduler
-from app.plugins.tasks import TaskManager, TaskState
+from app.plugins.tasks import TaskManager, TaskState, require_task_read
 from tests.conftest import FakeRedis
 
 
@@ -41,9 +41,13 @@ async def _scheduler_lifespan(app: FastAPI):
 
 
 def _make_scheduler_app() -> FastAPI:
-    """构造挂载了调度插件并接管调度循环生命周期的应用（用于集成测试）。"""
+    """构造挂载了调度插件并接管调度循环生命周期的应用（用于集成测试）。
+
+    观测接口需 task:read，这里用 dependency_overrides 放行（鉴权由 RBAC 用例覆盖）。
+    """
     scheduler_plugin.scheduler.reset()
     app = FastAPI(lifespan=_scheduler_lifespan)
+    app.dependency_overrides[require_task_read] = lambda: None
     scheduler_plugin.setup(app)
     return app
 

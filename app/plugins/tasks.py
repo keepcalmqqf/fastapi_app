@@ -13,9 +13,12 @@
   `TASK_TASKS_MODULE`（默认 `app.tasks`）注册的处理器。任务参数须可 JSON 序列化。
 - 结果/状态：memory 后端在内存保留最近 N 条（`recent()`）；redis 后端按 `job_id` 存结果哈希
   （`task:result:<job_id>`，带 TTL），经 `job_status(job_id)` 查询。分布式队列没有「全局最近
-  列表」概念，观测走 job_id + 队列深度(XLEN)/待处理(XPENDING)。
+  列表」概念，故投递时额外把 job_id 写进一张有上限的 ZSET 索引（`task:recent`），
+  `recent()` 据此还原最近投递记录，观测面与 memory 后端保持一致。
 - memory 后端的启停嵌进应用 lifespan：先备好 Redis/DB 再启动 worker，关闭时先停 worker
   最后关资源；redis 后端的 Web 进程 start() 仅建投递客户端与消费组，消费进程独立运行。
+- 观测接口需 `task:read`、手动投递需 `task:write`（见 app/services/rbac.py 种子）：
+  任务名与失败原因属内部实现细节，不应匿名可读；投递更要挡住未授权调用。
 """
 
 from __future__ import annotations
@@ -31,16 +34,19 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
 
 from app.api import API_V1_PREFIX
 from app.core import result
+from app.core.rbac import require_permissions
 from app.core.redis import create_redis
 from app.core.result import Result
 from app.core.settings import settings
+from app.models import User
 from app.models.base import utc_now
+from app.schemas.task import TaskDispatchIn, TaskDispatchOut
 
 logger = logging.getLogger("fastapi_app")
 
@@ -48,6 +54,12 @@ logger = logging.getLogger("fastapi_app")
 _STATE_CAP = 1000
 # redis 后端结果/状态哈希前缀
 _RESULT_PREFIX = "task:result:"
+# redis 后端「最近投递」索引（ZSET: member=job_id, score=入队时间戳），同样按 _STATE_CAP 截断
+_RECENT_KEY = "task:recent"
+
+# 观测/投递接口的权限守卫：模块级常量便于测试用 dependency_overrides 绕过
+require_task_read = require_permissions("task:read")
+require_task_write = require_permissions("task:write")
 
 
 async def ensure_group(redis: Redis) -> None:
@@ -158,7 +170,22 @@ class TaskManager:
             job_id,
             {"name": name, "state": "queued", "attempt": "0", "enqueued_at": utc_now().isoformat()},
         )
+        await self._track_recent(job_id)
         return job_id
+
+    async def _track_recent(self, job_id: str) -> None:
+        """把 job_id 记入「最近投递」索引并截断到 _STATE_CAP（redis 后端）。
+
+        索引只是观测用的旁路：写失败只告警，不影响任务本身已入队的事实。
+        """
+        if self._redis is None:
+            return
+        try:
+            await self._redis.zadd(_RECENT_KEY, {job_id: utc_now().timestamp()})
+            # 保留 score 最大的 _STATE_CAP 条，其余（最旧的）移除
+            await self._redis.zremrangebyrank(_RECENT_KEY, 0, -(_STATE_CAP + 1))
+        except Exception:  # noqa: BLE001 - 观测索引失败不应阻断投递
+            logger.warning("写入最近任务索引失败（不影响任务投递）", exc_info=True)
 
     def _ensure_queue(self) -> None:
         """确保任务队列已存在（未启动即投递时惰性创建，绑定到当前循环）。"""
@@ -379,9 +406,14 @@ class TaskManager:
         }
 
     async def astatus(self) -> dict[str, Any]:
-        """供接口使用：按后端返回运行状态（memory 为进程内计数，redis 为队列深度/待处理）。"""
+        """供接口使用：按后端返回运行状态（memory 为进程内计数，redis 为队列深度/待处理）。
+
+        `registered` 列出本进程已知的任务名：控制台据此给出可投递任务的候选；
+        redis 后端下 Web 进程未加载任务模块时为空（由 worker 侧解析），属预期。
+        """
+        registered = sorted(self._registry)
         if not self._is_redis():
-            return {"backend": "memory", **self.status()}
+            return {"backend": "memory", "registered": registered, **self.status()}
         queue_len = 0
         pending = 0
         consumers = 0
@@ -401,8 +433,11 @@ class TaskManager:
             "enabled": True,
             "stream": settings.TASK_STREAM,
             "group": settings.TASK_GROUP,
+            "registered": registered,
             "workers": 0,
+            # 队列深度（XLEN，含已消费未修剪的条目）与待处理（XPENDING，已派发未 ACK）
             "queue_len": queue_len,
+            "queue_size": pending,
             "pending": pending,
             "consumers": consumers,
         }
@@ -429,17 +464,20 @@ class TaskManager:
             "error": rec.error,
         }
 
-    def recent(self, limit: int = 20) -> list[dict[str, Any]]:
+    async def recent(self, limit: int = 20) -> list[dict[str, Any]]:
         """最近任务记录（按入队倒序）；不含调用参数，避免敏感数据经接口泄露。
 
-        仅 memory 后端有意义；redis 后端无全局最近列表概念，返回空（请用 job_status 按 id 查）。
+        memory 后端读进程内记录；redis 后端读 `task:recent` 索引里的 job_id，再逐条取结果
+        哈希（索引只存 job_id，状态仍以结果哈希为准，故重试/完成后的最新状态都能反映）。
         """
         if self._is_redis():
-            return []
+            return await self._recent_from_redis(limit)
         records = list(self._records.values())[-limit:]
         records.reverse()
         return [
             {
+                # job_id 与 redis 后端对齐，便于前端统一按 job_id 查询；task_id 保留兼容
+                "job_id": r.task_id,
                 "task_id": r.task_id,
                 "name": r.name,
                 "state": r.state.value,
@@ -450,6 +488,27 @@ class TaskManager:
             }
             for r in records
         ]
+
+    async def _recent_from_redis(self, limit: int) -> list[dict[str, Any]]:
+        """redis 后端的最近记录：先取索引里的 job_id，再逐条读结果哈希。"""
+        if self._redis is None:
+            return []
+        try:
+            job_ids = await self._redis.zrevrange(_RECENT_KEY, 0, max(1, limit) - 1)
+        except Exception:  # noqa: BLE001 - 观测接口降级为空列表，不 500
+            logger.warning("读取最近任务索引失败", exc_info=True)
+            return []
+        items: list[dict[str, Any]] = []
+        for raw_id in job_ids:
+            job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
+            try:
+                data = await self._redis.hgetall(f"{_RESULT_PREFIX}{job_id}")
+            except Exception:  # noqa: BLE001 - 单条读取失败跳过，其余照常展示
+                continue
+            if not data:
+                continue
+            items.append({"job_id": job_id, "task_id": job_id, **data})
+        return items
 
     def reset(self) -> None:
         """清空处理器注册表与记录（仅供测试与开发调试，不影响在途 worker）。"""
@@ -477,16 +536,40 @@ def setup(app: FastAPI) -> None:
 
     @_router.get(
         "",
-        summary="任务运行状态；传 job_id 可查单条任务状态/结果",
+        summary="任务运行状态与最近任务（需 task:read）；传 job_id 可查单条任务状态/结果",
         response_model=Result[dict],
     )
-    async def task_status(job_id: str | None = None) -> Result[dict]:
+    async def task_status(
+        job_id: str | None = None,
+        limit: int = Query(default=20, ge=1, le=100),
+        _: User = Depends(require_task_read),
+    ) -> Result[dict]:
         data = await task_manager.astatus()
         if job_id:
             data["job"] = await task_manager.job_status(job_id)
         else:
-            data["recent"] = task_manager.recent()
+            data["recent"] = await task_manager.recent(limit)
         return result.ok(data=data, message="请求成功")
+
+    @_router.post(
+        "/dispatch",
+        summary="手动投递一个已注册的具名任务（需 task:write），返回 job_id 供查状态",
+        response_model=Result[TaskDispatchOut],
+    )
+    async def dispatch_task(
+        payload: TaskDispatchIn,
+        _: User = Depends(require_task_write),
+    ) -> Result[TaskDispatchOut]:
+        try:
+            job_id = await task_manager.submit_named(
+                payload.name, *payload.args, retries=payload.retries, **payload.kwargs
+            )
+        except ValueError as exc:
+            # 未注册的具名任务：属调用方参数问题，转 400 而不是让它冒泡成 500
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result.ok(
+            data=TaskDispatchOut(name=payload.name, job_id=job_id), message="任务已投递"
+        )
 
     # 手动带版本前缀（插件不在 app.api 包内，不会被自动发现），与业务接口保持一致
     app.include_router(_router, prefix=API_V1_PREFIX)
