@@ -15,6 +15,7 @@ from app.core.settings import settings
 from app.core.static import SPAStaticFiles
 from app.plugins import setup_plugins
 from app.plugins.cache import set_redis
+from app.plugins.scheduler import scheduler
 from app.plugins.tasks import task_manager
 
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +30,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 让在途任务自然收尾），最后才关闭资源
     if settings.ENABLE_TASKS:
         await task_manager.start()
+    # 定时任务插件在 task_manager 之后启动（到点投递依赖它就绪）；关闭时先停调度
+    # （不再产生新投递），再停 task_manager 让在途任务收尾
+    if settings.ENABLE_SCHEDULER:
+        await scheduler.start()
     yield
+    if settings.ENABLE_SCHEDULER:
+        await scheduler.stop()
     if settings.ENABLE_TASKS:
         await task_manager.stop()
     await redis.aclose()

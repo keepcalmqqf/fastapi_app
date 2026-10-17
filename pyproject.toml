@@ -25,6 +25,7 @@ dependencies = [
     # 缺包会直接 RuntimeError 连不上库。PyMySQL 自带实现不受影响，所以只有
     # 应用运行时的异步驱动受影响——缺失时表现为「重启 MySQL 后服务连不上」。
     "cryptography>=42",
+    "croniter>=6.2.4",
 ]
 
 [dependency-groups]

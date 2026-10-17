@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.plugins.scheduler import scheduler
 from app.plugins.tasks import task_manager
 
 logger = logging.getLogger("fastapi_app")
@@ -30,8 +31,13 @@ async def send_welcome_email(user_id: int) -> dict:
     return {"user_id": user_id, "sent": True}
 
 
-@task_manager.task("cleanup_expired_tokens")
+@scheduler.cron("0 3 * * *", name="cleanup_expired_tokens", retries=2)
 async def cleanup_expired_tokens() -> dict:
-    """示例：清理过期令牌（此处仅打日志，真实实现可调 service/repository）。"""
+    """示例：每天 03:00（SCHEDULER_TIMEZONE 时区）清理过期令牌。
+
+    `@scheduler.cron` 同时完成两件事：把处理器注册为具名任务（等价于
+    `@task_manager.task("cleanup_expired_tokens")`），并登记 cron 触发计划。
+    ENABLE_SCHEDULER 关闭时只注册不触发；真实实现可调 service/repository。
+    """
     logger.info("清理过期令牌（示例任务）")
     return {"cleaned": 0}

@@ -39,3 +39,8 @@ def setup_plugins(app: FastAPI) -> None:
 
         tasks.setup(app)
         logger.info("插件已启用: tasks (worker=%d)", settings.TASK_WORKERS)
+    if settings.ENABLE_SCHEDULER:
+        from app.plugins import scheduler
+
+        scheduler.setup(app)
+        logger.info("插件已启用: scheduler (timezone=%s)", settings.SCHEDULER_TIMEZONE)

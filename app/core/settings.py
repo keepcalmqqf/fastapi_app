@@ -142,6 +142,16 @@ class Settings(BaseSettings):
     # worker 消费组内的消费者名前缀；留空则用 主机名-pid 保证多进程/多机不冲突
     TASK_CONSUMER_NAME: str = ""
 
+    # 定时任务调度插件：关闭时连路由与调度循环都不存在，与未集成行为完全一致。
+    # 只做触发器：到点经 task_manager.submit_named 投递，执行复用 tasks 插件，
+    # 因此 memory 后端下需同时开启 ENABLE_TASKS 才有消费者执行任务
+    ENABLE_SCHEDULER: bool = False
+    # cron 表达式的求值时区（IANA 名，如 Asia/Shanghai）；记录与比较统一用 UTC
+    SCHEDULER_TIMEZONE: str = "UTC"
+    # 多实例防重复投递锁（sched:lock:<任务名>:<触发时刻>）的过期秒数：
+    # 只需长过同一任务的最小周期间隔，即可挡住锁残留导致的误跳过
+    SCHEDULER_LOCK_TTL: int = 3600
+
     @field_validator("MODE")
     @classmethod
     def _normalize_mode(cls, v: str) -> str:

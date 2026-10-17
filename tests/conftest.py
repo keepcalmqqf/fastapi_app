@@ -110,8 +110,15 @@ class FakeRedis:
     async def ttl(self, key: str) -> int:
         return self._ttl.get(key, -1) if key in self._data else -2
 
-    async def set(self, key: str, value: str, ex: int | None = None) -> bool:
+    async def set(
+        self, key: str, value: str, ex: int | None = None, nx: bool = False
+    ) -> bool | None:
+        # nx=True 时键已存在则返回 None（与 redis-py 行为一致），供分布式锁用例使用
+        if nx and key in self._data:
+            return None
         self._data[key] = value
+        if ex is not None:
+            self._ttl[key] = ex
         return True
 
     async def setex(self, key: str, ttl: int, value: str) -> bool:
