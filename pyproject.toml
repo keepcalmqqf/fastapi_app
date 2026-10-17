@@ -26,6 +26,10 @@ dependencies = [
     # 应用运行时的异步驱动受影响——缺失时表现为「重启 MySQL 后服务连不上」。
     "cryptography>=42",
     "croniter>=6.2.4",
+    # zoneinfo 的 IANA 时区库：Windows 与精简基础镜像没有系统 tzdata，
+    # 缺包时 ZoneInfo("UTC") 都会抛 ZoneInfoNotFoundError，定时任务插件无法启动。
+    # 有系统时区库时 stdlib 优先用系统的，装了只是兜底，无副作用。
+    "tzdata>=2025.2",
 ]
 
 [dependency-groups]

@@ -88,7 +88,8 @@ class Scheduler:
         self._stopping = False
         # 触发锁客户端（测试可经 set_redis 注入 FakeRedis；生产懒建）
         self._redis: Redis | None = None
-        self._tz: ZoneInfo | None = None
+        # 兜底时区是纯偏移实现（timezone.utc），不依赖 IANA 库，故类型不是纯 ZoneInfo
+        self._tz: ZoneInfo | timezone | None = None
 
     def set_redis(self, client: Redis | None) -> None:
         """注入 Redis 客户端（测试用；生产由 _acquire_lock 内部懒建）。"""
@@ -151,15 +152,20 @@ class Scheduler:
         return removed
 
     # ------------------------------------------------------------------ 触发计算
-    def _timezone(self) -> ZoneInfo:
+    def _timezone(self) -> ZoneInfo | timezone:
         if self._tz is None:
             try:
                 self._tz = ZoneInfo(settings.SCHEDULER_TIMEZONE)
             except Exception:  # noqa: BLE001 - 配置错误的时区不应阻断启动，回退 UTC
                 logger.warning(
-                    "SCHEDULER_TIMEZONE=%s 无法识别，回退为 UTC", settings.SCHEDULER_TIMEZONE
+                    "SCHEDULER_TIMEZONE=%s 无法识别，回退为 UTC"
+                    "（Windows/精简镜像缺少 IANA 时区库时安装 tzdata 即可恢复）",
+                    settings.SCHEDULER_TIMEZONE,
                 )
-                self._tz = ZoneInfo("UTC")
+                # 兜底必须是 timezone.utc 而不是 ZoneInfo("UTC")：时区库缺失时后者会抛同样的
+                # ZoneInfoNotFoundError，把「配置错误降级」变成「启动崩溃」（lifespan 在此中断）。
+                # timezone.utc 是纯固定偏移实现，任何环境都可用。
+                self._tz = timezone.utc
         return self._tz
 
     @staticmethod

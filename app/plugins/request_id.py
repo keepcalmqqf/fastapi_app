@@ -37,6 +37,9 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
+logger = logging.getLogger("fastapi_app")
+
+
 def setup(app: FastAPI) -> None:
     root = logging.getLogger()
     log_filter = RequestIdFilter()
@@ -46,3 +49,4 @@ def setup(app: FastAPI) -> None:
             logging.Formatter("%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s")
         )
     app.add_middleware(RequestIdMiddleware)
+    logger.info("插件已启用: request_id (请求头 X-Request-ID)")

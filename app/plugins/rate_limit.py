@@ -141,6 +141,7 @@ def setup(app: FastAPI) -> None:
         )
     app.state.limiter = limiter
     if limiter.enabled:
+        logger.info("插件已启用: rate_limit (默认 %s)", settings.RATE_LIMIT)
         logger.info(
             "限流存储: %s",
             "共享计数（Redis）"
