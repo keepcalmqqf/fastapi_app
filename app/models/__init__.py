@@ -14,4 +14,5 @@ from app.models.rbac import (  # noqa: E402, F401
     role_permission_table,
     user_role_table,
 )
+from app.models.task import TaskRun  # noqa: E402, F401
 from app.models.user import User  # noqa: E402, F401

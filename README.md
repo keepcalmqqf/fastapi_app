@@ -135,6 +135,8 @@ cd frontend && npm run build   # 产出 frontend/dist
 | GET | `/api/v1/audit/logs` | 分页查询审计日志（admin 令牌，可按 `action`/`actor_id` 过滤，按时间倒序） |
 | GET | `/api/v1/tasks` | 异步任务观测：`ENABLE_TASKS` 开启后返回运行状态与最近任务（需 `task:read`；`?job_id=` 查单条，`?limit=` 条数 1-100） |
 | POST | `/api/v1/tasks/dispatch` | 手动投递一个已注册的具名任务，返回 `job_id`（需 `task:write`） |
+| GET | `/api/v1/tasks/history` | 任务执行历史分页查询（落库表 `task_run`，支持任务名/状态/时间区间过滤，需 `task:read`） |
+| DELETE | `/api/v1/tasks/history` | 清理 `?days=` 天之前的历史记录（需 `task:write`） |
 | GET | `/api/v1/scheduler` | 定时计划列表（cron、上次/下次触发时间、最近 job_id，需 `task:read`） |
 
 所有业务接口统一挂在 `/api/v1` 版本前缀下（由 `register_routers` 自动添加，新增模块无需关心），
@@ -150,7 +152,7 @@ cd frontend && npm run build   # 产出 frontend/dist
 
 审计日志：账号创建/更新/删除、改密、会员注销、登录失败都会写入 `audit_log`，用 `GET /api/v1/audit/logs` 查询。审计有自己的事务边界（写完立即提交），写入失败只记日志、不影响业务结果。
 
-异步任务：`ENABLE_TASKS=true` 后后台「异步任务」页即可观测——运行指标（执行中/队列积压/队列深度/消费者）、最近任务列表（状态、耗时、错误信息，可按 `job_id` 回看单条）、`@scheduler.cron` 登记的定时计划，并可在页面上手动投递已注册的具名任务（需 `task:write`）。插件未启用时接口是 404，页面显示「未启用」空态而不是报错。详见下方「异步任务控制台」。
+异步任务：`ENABLE_TASKS=true` 后后台「异步任务」页即可观测——运行指标（执行中/队列积压/队列深度/消费者）、最近任务列表（状态、耗时、错误信息，可按 `job_id` 回看单条）、执行历史（落库到 `task_run` 表，可按任务名/状态/时间区间分页回溯，重启与 TTL 到期都不丢）、`@scheduler.cron` 登记的定时计划，并可在页面上手动投递已注册的具名任务（需 `task:write`）。插件未启用时接口是 404，页面显示「未启用」空态而不是报错。详见下方「异步任务控制台」。
 
 认证要点：access token 默认 30 分钟、refresh token 默认 7 天；后台（`aud=admin`）与会员（`aud=member`）令牌互不通用。access token 带 `type="access"`、refresh token 带 `type="refresh"`，**受保护接口只接受访问令牌，refresh 令牌直接当访问令牌用一律 401**（否则登出后凭长效 refresh 令牌仍可操作后台接口）。登出只让当前设备的令牌失效；**停用/软删用户、会员注销则撤销该账号全部令牌（含其他设备）**，重新启用也不会复活旧会话。取令牌顺序为 `Authorization: Bearer` 优先、其次 `access_token` Cookie；**Cookie 来源的写请求（POST/PUT/PATCH/DELETE）必须携带 `X-Requested-With: XMLHttpRequest`，否则 403**（Bearer 来源不受此约束）。
 
@@ -212,6 +214,8 @@ curl -b cookie.jar -X POST http://127.0.0.1:8000/api/v1/user/ \
 | `ENABLE_I18N` | `true` | 国际化插件：按请求解析语种并翻译统一响应文案，详见 `AGENTS.md` |
 | `I18N_LOCALES` / `I18N_DEFAULT_LOCALE` | `zh-CN,en-US` / `zh-CN` | i18n 支持语种与默认语种 |
 | `ENABLE_REQUEST_ID` | `true` | 请求 ID 中间件插件 |
+| `ENABLE_TASKS` / `TASK_BACKEND` | `false` / `memory` | 异步任务插件开关与后端（memory 进程内 / redis 分布式） |
+| `TASK_PERSIST_HISTORY` / `TASK_HISTORY_RETENTION_DAYS` | `true` / `30` | 任务执行历史落库开关与保留天数（关闭后只保留内存/Redis 中的最近记录） |
 | `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA |
 
 ## 可插拔插件
@@ -237,14 +241,16 @@ async def heavy_query(user_id: int): ...
 | 运行指标 | `GET /api/v1/tasks` | 后端类型、`执行中`、`队列积压/待处理`、`队列深度/已跟踪`、`Worker/消费者`；memory 与 redis 两种后端展示各自有意义的指标 |
 | 定时计划 | `GET /api/v1/scheduler` | `ENABLE_SCHEDULER` 开启时展示 cron、时区、上次/下次触发时间、最近一次投递的 job_id |
 | 最近任务 | `GET /api/v1/tasks` | 任务名、状态、重试次数、入队时间、耗时；详情抽屉里看错误与返回值；可按 `job_id` 回看单条（redis 后端无全局列表时的定位入口） |
+| 执行历史 | `GET /api/v1/tasks/history` | 落库记录的分页回溯：任务名/状态/时间区间过滤，按入队时间倒序；详情抽屉与「最近任务」共用，看错误与返回值 |
 | 手动投递 | `POST /api/v1/tasks/dispatch` | 选一个已注册任务名（`registered` 列表）+ JSON 参数投递，便于验证链路（需 `task:write`） |
 
 要点：
 
-- **权限**：观测需 `task:read`、投递需 `task:write`（种子内置，`admin` 两者都有，`viewer` 都没有）；菜单与按钮按同一套权限码控制。
+- **权限**：观测需 `task:read`、投递与清理需 `task:write`（种子内置，`admin` 两者都有，`viewer` 都没有）；菜单与按钮按同一套权限码控制。
 - **插件未启用**：接口不存在（404），页面渲染「未启用」空态并提示开启方式，不弹错误提示；概览页的异步任务卡片也会自动隐藏。
-- **memory 后端**：记录只在进程内存（最近 1000 条），重启即丢；刷新页面看到的是当前进程的任务。
+- **memory 后端**：「最近任务」只在进程内存（最近 1000 条），重启即丢；刷新页面看到的是当前进程的任务。
 - **redis 后端**：Web 进程只投递/查询，**消费由 `python -m app.plugins.tasks_worker` 独立进程完成**；投递时额外把 job_id 写入有上限的 `task:recent` 索引，页面才能列出「最近任务」。没起 worker 时会看到「待处理」只增不减。
+- **执行历史落库**：两种后端都会在「入队 / 开始执行 / 成功 / 失败 / 重试」节点把一次运行的最终状态写入 `task_run` 表（按 `job_id` 覆盖式更新，同一任务只留一条最新记录，返回值截断 500 字）。写库是**旁路**：失败只记 `warning` 日志，绝不打断任务执行。保留策略有两种——页面上按天数清理（`DELETE /api/v1/tasks/history?days=N`，需 `task:write`），或启用示例定时任务 `cleanup_task_history`（`app/tasks.py`，每天 04:00 按 `TASK_HISTORY_RETENTION_DAYS` 清理）。设 `TASK_PERSIST_HISTORY=false` 可完全关闭落库。
 
 ## 数据库迁移
 

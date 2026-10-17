@@ -29,18 +29,60 @@ import logging
 import os
 import signal
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 from app.core.redis import create_redis
 from app.core.settings import settings
 from app.models.base import utc_now
 from app.plugins.tasks import _RESULT_PREFIX, ensure_group, task_manager
+from app.services import task as task_history
 
 logger = logging.getLogger("fastapi_app")
 
 
 def _now() -> str:
     return utc_now().isoformat()
+
+
+def _parse_time(value: str | None) -> datetime | None:
+    """把 ISO 串还原成 naive UTC（与历史表时间列同款，带偏移的一律换算到 UTC）。"""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+async def _history(
+    job_id: str,
+    name: str,
+    state: str,
+    *,
+    attempt: int = 0,
+    retries: int = 0,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    error: str | None = None,
+    result: Any = None,
+) -> None:
+    """写一条执行历史（fail-safe，见 app/services/task.py）。"""
+    await task_history.record_run(
+        job_id=job_id,
+        name=name,
+        state=state,
+        backend="redis",
+        attempt=attempt,
+        retries=retries,
+        started_at=started_at,
+        finished_at=finished_at,
+        error=error,
+        result=result,
+    )
 
 
 async def _touch(redis: Any, job_id: str, mapping: dict[str, Any]) -> None:
@@ -78,7 +120,18 @@ async def _process(redis: Any, entry_id: str, fields: dict[str, Any]) -> None:
         logger.error("未注册的任务: %s（entry=%s）", name, entry_id)
         return
 
-    await _touch(redis, job_id, {"state": "running", "attempt": str(attempt), "started_at": _now()})
+    started_at = _now()
+    await _touch(
+        redis, job_id, {"state": "running", "attempt": str(attempt), "started_at": started_at}
+    )
+    await _history(
+        job_id,
+        name,
+        "running",
+        attempt=attempt,
+        retries=max_retries,
+        started_at=_parse_time(started_at),
+    )
     try:
         value = await handler(*args, **kwargs)
     except Exception as exc:  # noqa: BLE001 - 任务异常需被记录并走重试/失败分支
@@ -97,21 +150,55 @@ async def _process(redis: Any, entry_id: str, fields: dict[str, Any]) -> None:
                     "last_error": f"{type(exc).__name__}: {exc}",
                 },
             )
+            await _history(
+                job_id,
+                name,
+                "queued",
+                attempt=attempt + 1,
+                retries=max_retries,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             await redis.xack(settings.TASK_STREAM, settings.TASK_GROUP, entry_id)
             logger.warning("任务 %s 第 %d 次执行失败，已重排重试", name, attempt + 1)
         else:
+            finished_at = _now()
             await _touch(
                 redis,
                 job_id,
-                {"state": "failed", "error": f"{type(exc).__name__}: {exc}", "finished_at": _now()},
+                {
+                    "state": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "finished_at": finished_at,
+                },
+            )
+            await _history(
+                job_id,
+                name,
+                "failed",
+                attempt=attempt,
+                retries=max_retries,
+                started_at=_parse_time(started_at),
+                finished_at=_parse_time(finished_at),
+                error=f"{type(exc).__name__}: {exc}",
             )
             await redis.xack(settings.TASK_STREAM, settings.TASK_GROUP, entry_id)
             logger.exception("任务 %s 执行失败且超过重试上限", name)
     else:
-        mapping: dict[str, Any] = {"state": "success", "finished_at": _now()}
+        finished_at = _now()
+        mapping: dict[str, Any] = {"state": "success", "finished_at": finished_at}
         if value is not None:
             mapping["result"] = json.dumps(value, ensure_ascii=False, default=str)
         await _touch(redis, job_id, mapping)
+        await _history(
+            job_id,
+            name,
+            "success",
+            attempt=attempt,
+            retries=max_retries,
+            started_at=_parse_time(started_at),
+            finished_at=_parse_time(finished_at),
+            result=value,
+        )
         await redis.xack(settings.TASK_STREAM, settings.TASK_GROUP, entry_id)
 
 

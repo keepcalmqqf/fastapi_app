@@ -1,6 +1,7 @@
 import axios from 'axios'
 import request from './request'
 import type { ApiResult } from './request'
+import type { Page } from './user'
 
 // 异步任务控制台的数据来自两个可选插件的观测接口：
 //   GET  /api/v1/tasks            → 运行状态 + 最近任务（需 task:read）
@@ -62,6 +63,32 @@ export interface SchedulerStatus {
   jobs: ScheduledJob[]
 }
 
+/** 执行历史条目：落库的 task_run 记录，重启与 Redis TTL 到期都不丢 */
+export interface TaskHistoryItem {
+  id: number
+  job_id: string
+  name: string
+  backend: string
+  state: string
+  attempt: number
+  retries: number
+  enqueued_at: string
+  started_at: string | null
+  finished_at: string | null
+  duration_ms: number | null
+  error: string | null
+  result: string | null
+}
+
+export interface TaskHistoryParams {
+  page: number
+  page_size: number
+  name?: string
+  state?: string
+  enqueued_at_from?: string
+  enqueued_at_to?: string
+}
+
 export interface TaskDispatchPayload {
   name: string
   args?: unknown[]
@@ -102,6 +129,26 @@ export async function getTaskStatus(params: { limit?: number; jobId?: string } =
     if (isNotFound(error)) throw new PluginDisabledError('tasks')
     throw error
   }
+}
+
+/** 执行历史分页查询（落库记录，可回溯）。 */
+export async function getTaskHistory(params: TaskHistoryParams) {
+  try {
+    return await request.get<never, ApiResult<Page<TaskHistoryItem>>>('/api/v1/tasks/history', {
+      params,
+    })
+  } catch (error) {
+    if (isNotFound(error)) throw new PluginDisabledError('tasks')
+    throw error
+  }
+}
+
+/** 清理执行历史：删掉 N 天前入队的记录。 */
+export function purgeTaskHistory(days: number) {
+  return request.delete<never, ApiResult<{ deleted: number; days: number }>>(
+    '/api/v1/tasks/history',
+    { params: { days } },
+  )
 }
 
 /** 定时计划列表。 */

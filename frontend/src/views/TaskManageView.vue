@@ -1,12 +1,21 @@
 <script setup lang="ts">
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   dispatchTask,
   getSchedulerJobs,
+  getTaskHistory,
   getTaskStatus,
+  purgeTaskHistory,
   PluginDisabledError,
 } from '../api/task'
-import type { ScheduledJob, SchedulerStatus, TaskJob, TaskState, TaskStatus } from '../api/task'
+import type {
+  ScheduledJob,
+  SchedulerStatus,
+  TaskHistoryItem,
+  TaskJob,
+  TaskState,
+  TaskStatus,
+} from '../api/task'
 import { usePermissionStore } from '../stores/permission'
 import { formatTime } from '../utils/datetime'
 import { translate as t } from '../plugins/i18n'
@@ -50,6 +59,8 @@ async function load() {
       schedulerEnabled.value = false
     }
     lastUpdated.value = new Date().toISOString()
+    // 历史与实时数据一起刷新，避免两块看到的进度不一致
+    await loadHistory()
   } finally {
     loading.value = false
   }
@@ -184,6 +195,107 @@ async function openJobById(jobId: string) {
 
 function onQueryJob() {
   openJobById(queryId.value.trim())
+}
+
+// ------------------------------------------------------------------ 执行历史
+// 实时观测（内存/Redis 索引）会随重启或 TTL 过期消失，历史表才是可回溯的记录
+const historyStates: TaskState[] = ['queued', 'running', 'success', 'failed']
+
+/** 历史行已结算 duration_ms，直接展示；未完成的任务没有该值 */
+function historyDuration(row: TaskHistoryItem): string {
+  if (row.duration_ms === null) return '-'
+  return row.duration_ms < 1000 ? `${row.duration_ms} ms` : `${(row.duration_ms / 1000).toFixed(2)} s`
+}
+
+// 复用同一个详情抽屉：历史行字段与实时任务基本同名，做一次形状对齐
+function openHistoryDetail(row: TaskHistoryItem) {
+  detailRow.value = {
+    job_id: row.job_id,
+    name: row.name,
+    state: row.state as TaskState,
+    attempt: String(row.attempt),
+    enqueued_at: row.enqueued_at,
+    started_at: row.started_at ?? undefined,
+    finished_at: row.finished_at ?? undefined,
+    error: row.error ?? undefined,
+    result: row.result ?? undefined,
+  }
+  detailVisible.value = true
+}
+const historyItems = ref<TaskHistoryItem[]>([])
+const historyTotal = ref(0)
+const historyPage = ref(1)
+const historyPageSize = ref(20)
+const historyLoading = ref(false)
+const historyName = ref('')
+const historyState = ref('')
+
+async function loadHistory() {
+  historyLoading.value = true
+  try {
+    const res = await getTaskHistory({
+      page: historyPage.value,
+      page_size: historyPageSize.value,
+      name: historyName.value.trim() || undefined,
+      state: historyState.value || undefined,
+    })
+    historyItems.value = res.data.items
+    historyTotal.value = res.data.total
+  } catch {
+    // 失败原因已由 request 拦截器统一提示
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+// 筛选条件序列化成 key 后再 watch，避免一次操作触发两次请求（同审计日志页）
+const historyFilterKey = computed(() =>
+  JSON.stringify([historyName.value.trim(), historyState.value]),
+)
+watchDebounced(historyFilterKey, onHistorySearch, { debounce: 400 })
+
+function onHistorySearch() {
+  historyPage.value = 1
+  loadHistory()
+}
+
+function onHistoryPageChange(p: number) {
+  historyPage.value = p
+  loadHistory()
+}
+
+function onHistorySizeChange(size: number) {
+  historyPageSize.value = size
+  historyPage.value = 1
+  loadHistory()
+}
+
+const purging = ref(false)
+
+async function onPurgeHistory() {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      t('删除入队时间早于该天数前的记录，不可恢复'),
+      t('清理执行历史'),
+      {
+        inputValue: '30',
+        inputPattern: /^\d{1,4}$/,
+        inputErrorMessage: t('请输入 1-9999 之间的天数'),
+        confirmButtonText: t('确定'),
+        cancelButtonText: t('取消'),
+      },
+    )
+    const days = Number(value)
+    purging.value = true
+    const res = await purgeTaskHistory(days)
+    ElMessage.success(t('已清理 {count} 条历史', { count: res.data.deleted }))
+    await loadHistory()
+  } catch (error) {
+    // 取消输入或请求失败：前者无需提示，后者拦截器已提示
+    if (error !== 'cancel') return
+  } finally {
+    purging.value = false
+  }
 }
 
 // ------------------------------------------------------------------ 手动投递
@@ -384,6 +496,100 @@ function onLimitChange(size: number) {
           <el-select v-model="recentLimit" class="limit-select" @change="onLimitChange">
             <el-option v-for="size in [10, 20, 50, 100]" :key="size" :label="`${size} ${t('条')}`" :value="size" />
           </el-select>
+        </div>
+      </el-card>
+
+      <el-card class="admin-card" shadow="never">
+        <template #header>
+          <div class="admin-toolbar">
+            <span class="admin-toolbar__title">
+              {{ t('执行历史') }}
+              <span class="admin-muted">· {{ t('落库记录，重启不丢') }}</span>
+            </span>
+            <div class="admin-toolbar__actions">
+              <el-button v-if="canDispatch" :loading="purging" @click="onPurgeHistory">
+                {{ t('清理历史') }}
+              </el-button>
+              <el-button :loading="historyLoading" @click="loadHistory">{{ t('刷新') }}</el-button>
+            </div>
+          </div>
+        </template>
+
+        <el-form class="filters" :inline="true" @submit.prevent="onHistorySearch">
+          <el-form-item :label="t('任务名')">
+            <el-select
+              v-model="historyName"
+              filterable
+              clearable
+              allow-create
+              default-first-option
+              :placeholder="t('全部任务')"
+              style="width: 220px"
+            >
+              <el-option v-for="name in registeredNames" :key="name" :label="name" :value="name" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="t('状态')">
+            <el-select v-model="historyState" clearable :placeholder="t('全部状态')" style="width: 140px">
+              <el-option v-for="s in historyStates" :key="s" :label="stateLabel(s)" :value="s" />
+            </el-select>
+          </el-form-item>
+          <el-form-item>
+            <el-button type="primary" @click="onHistorySearch">{{ t('查询') }}</el-button>
+            <el-button
+              @click="
+                () => {
+                  historyName = ''
+                  historyState = ''
+                  onHistorySearch()
+                }
+              "
+            >
+              {{ t('重置') }}
+            </el-button>
+          </el-form-item>
+        </el-form>
+
+        <el-table v-loading="historyLoading" :data="historyItems" border stripe>
+          <el-table-column :label="t('任务名')" min-width="160">
+            <template #default="{ row }">{{ row.name }}</template>
+          </el-table-column>
+          <el-table-column :label="t('状态')" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag :type="stateTagType(row.state)" size="small">{{ stateLabel(row.state) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column :label="t('重试次数')" width="90" align="center">
+            <template #default="{ row }">{{ row.attempt }}</template>
+          </el-table-column>
+          <el-table-column :label="t('入队时间')" width="180">
+            <template #default="{ row }">{{ formatTime(row.enqueued_at) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('耗时')" width="110" align="right">
+            <template #default="{ row }">{{ historyDuration(row) }}</template>
+          </el-table-column>
+          <el-table-column :label="t('后端')" width="90" align="center">
+            <template #default="{ row }">{{ row.backend }}</template>
+          </el-table-column>
+          <el-table-column :label="t('操作')" width="90" align="center" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" @click="openHistoryDetail(row)">{{ t('详情') }}</el-button>
+            </template>
+          </el-table-column>
+          <template #empty>{{ t('暂无执行历史') }}</template>
+        </el-table>
+
+        <div class="admin-pager">
+          <el-pagination
+            background
+            layout="total, sizes, prev, pager, next"
+            :total="historyTotal"
+            :current-page="historyPage"
+            :page-size="historyPageSize"
+            :page-sizes="[10, 20, 50, 100]"
+            @current-change="onHistoryPageChange"
+            @size-change="onHistorySizeChange"
+          />
         </div>
       </el-card>
     </template>

@@ -122,6 +122,11 @@ class Settings(BaseSettings):
     TASK_MAX_QUEUE: int = 0
     # 关闭时等待在途任务自然收尾的最长秒数；超时则强制取消剩余任务
     TASK_SHUTDOWN_TIMEOUT: float = 10.0
+    # 执行历史落库开关：开启后每次投递/执行都会把任务写入 task_run 表（可分页回溯、
+    # 重启与 Redis TTL 到期都不丢）。写库失败只记日志，绝不影响任务本身的执行。
+    TASK_PERSIST_HISTORY: bool = True
+    # 执行历史默认保留天数：控制台「清理历史」与示例定时任务 cleanup_task_history 的默认值
+    TASK_HISTORY_RETENTION_DAYS: int = 30
 
     # ---- 分布式（Redis Streams）后端专用配置 ----
     # Stream 键名与消费组名（XADD / XGROUP CREATE）。按业务可分队列隔离。

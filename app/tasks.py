@@ -17,8 +17,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from app.core.database import AsyncSessionLocal
+from app.core.settings import settings
 from app.plugins.scheduler import scheduler
 from app.plugins.tasks import task_manager
+from app.services import task as task_history
 
 logger = logging.getLogger("fastapi_app")
 
@@ -41,3 +44,16 @@ async def cleanup_expired_tokens() -> dict:
     """
     logger.info("清理过期令牌（示例任务）")
     return {"cleaned": 0}
+
+
+@scheduler.cron("0 4 * * *", name="cleanup_task_history", retries=1)
+async def cleanup_task_history() -> dict:
+    """示例：每天 04:00 清理过期的任务执行历史。
+
+    执行历史只作观测留痕、量会持续增长，必须有出口。保留天数取
+    `TASK_HISTORY_RETENTION_DAYS`（与控制台「清理历史」默认值同源）。
+    """
+    async with AsyncSessionLocal() as db:
+        deleted = await task_history.purge_history(db, settings.TASK_HISTORY_RETENTION_DAYS)
+    logger.info("已清理任务执行历史: %d 条", deleted)
+    return {"deleted": deleted}

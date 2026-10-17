@@ -37,16 +37,20 @@ from typing import Any
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from redis.asyncio import Redis
 from redis.exceptions import ResponseError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import API_V1_PREFIX
 from app.core import result
+from app.core.database import get_db
 from app.core.rbac import require_permissions
 from app.core.redis import create_redis
 from app.core.result import Result
 from app.core.settings import settings
 from app.models import User
 from app.models.base import utc_now
-from app.schemas.task import TaskDispatchIn, TaskDispatchOut
+from app.schemas.page import Page, PageParams
+from app.schemas.task import TaskDispatchIn, TaskDispatchOut, TaskHistoryOut, TaskHistoryQuery
+from app.services import task as task_history
 
 logger = logging.getLogger("fastapi_app")
 
@@ -76,6 +80,10 @@ class TaskState(str, Enum):
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
+
+
+# memory 后端的入队态叫 pending，执行历史与 redis 后端统一记为 queued
+_HISTORY_STATES: dict[TaskState, str] = {TaskState.PENDING: "queued"}
 
 
 @dataclass
@@ -153,6 +161,7 @@ class TaskManager:
             self._redis = create_redis()
         await self._ensure_group(self._redis)
         job_id = uuid.uuid4().hex
+        enqueued_at = utc_now()
         payload = json.dumps(
             {
                 "job_id": job_id,
@@ -168,9 +177,23 @@ class TaskManager:
         await self._redis.xadd(settings.TASK_STREAM, {"data": payload})
         await self._set_job(
             job_id,
-            {"name": name, "state": "queued", "attempt": "0", "enqueued_at": utc_now().isoformat()},
+            {
+                "name": name,
+                "state": "queued",
+                "attempt": "0",
+                "enqueued_at": enqueued_at.isoformat(),
+            },
         )
         await self._track_recent(job_id)
+        # 入库留痕：没起 worker 时「排队中但一直没被消费」也能在历史里看出来
+        await task_history.record_run(
+            job_id=job_id,
+            name=name,
+            state="queued",
+            backend="redis",
+            retries=max(0, retries),
+            enqueued_at=enqueued_at,
+        )
         return job_id
 
     async def _track_recent(self, job_id: str) -> None:
@@ -244,7 +267,11 @@ class TaskManager:
         self._track(record)
         self._ensure_queue()
         item = _Item(record=record, handler=handler, args=args, kwargs=kwargs, retries=retries)
-        await self._enqueue(item)
+        try:
+            await self._enqueue(item)
+        finally:
+            # 入队成功落 queued；队列满被拒时 _enqueue 已把状态置 failed，这里如实留痕
+            await self._persist(record)
         return task_id
 
     def _track(self, record: TaskRecord) -> None:
@@ -350,6 +377,25 @@ class TaskManager:
         self._stopping = False
         logger.info("异步任务插件已停止")
 
+    # ------------------------------------------------------------------ 留痕
+    async def _persist(self, record: TaskRecord, *, result: Any = None) -> None:
+        """把一条任务记录写进执行历史（fail-safe：失败只记日志，不影响任务本身）。
+
+        历史表按 job_id 覆盖式更新，所以这里每推进一步状态就写一次，最终态为准。
+        """
+        await task_history.record_run(
+            job_id=record.task_id,
+            name=record.name,
+            state=_HISTORY_STATES.get(record.state, record.state.value),
+            backend=self._backend,
+            retries=record.retries_left,
+            enqueued_at=record.enqueued_at,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+            error=record.error,
+            result=result,
+        )
+
     # ------------------------------------------------------------------ worker
     async def _worker(self) -> None:
         while True:
@@ -372,12 +418,17 @@ class TaskManager:
         current = asyncio.current_task()
         if current is not None:
             self._running[record.task_id] = current
+        await self._persist(record)
+        value: Any = None
+        succeeded = False
         try:
-            await item.handler(*item.args, **item.kwargs)
+            value = await item.handler(*item.args, **item.kwargs)
+            succeeded = True
         except Exception as exc:  # noqa: BLE001 - 任务异常需被记录，不应冒泡到事件循环
             if item.retries > 0:
                 item.retries -= 1
                 record.state = TaskState.PENDING
+                record.error = f"{type(exc).__name__}: {exc}"
                 try:
                     self._queue.put_nowait(item)
                 except asyncio.QueueFull:
@@ -394,6 +445,8 @@ class TaskManager:
             if record.state in (TaskState.SUCCESS, TaskState.FAILED):
                 record.finished_at = utc_now()
             self._running.pop(record.task_id, None)
+            # 终态留痕（带上返回值）；重试中回到 PENDING 时也记一次，便于看出重试次数
+            await self._persist(record, result=value if succeeded else None)
 
     # ------------------------------------------------------------------ 观测
     def status(self) -> dict[str, Any]:
@@ -550,6 +603,47 @@ def setup(app: FastAPI) -> None:
         else:
             data["recent"] = await task_manager.recent(limit)
         return result.ok(data=data, message="请求成功")
+
+    @_router.get(
+        "/history",
+        summary="执行历史分页查询（需 task:read）：落库的 task_run 记录，重启不丢",
+        response_model=Result[Page[TaskHistoryOut]],
+    )
+    async def task_history_list(
+        params: PageParams = Depends(),
+        query: TaskHistoryQuery = Depends(),
+        db: AsyncSession = Depends(get_db),
+        _: User = Depends(require_task_read),
+    ) -> Result[Page[TaskHistoryOut]]:
+        items, total = await task_history.list_history(
+            db,
+            params.page,
+            params.page_size,
+            name=query.name,
+            state=query.state,
+            enqueued_at_from=query.enqueued_at_from,
+            enqueued_at_to=query.enqueued_at_to,
+        )
+        page = Page[TaskHistoryOut](
+            total=total,
+            page=params.page,
+            page_size=params.page_size,
+            items=[TaskHistoryOut.model_validate(i) for i in items],
+        )
+        return result.ok(data=page)
+
+    @_router.delete(
+        "/history",
+        summary="清理执行历史（需 task:write）：删掉 enqueued_at 早于 N 天前的记录",
+        response_model=Result[dict],
+    )
+    async def task_history_purge(
+        days: int = Query(default=settings.TASK_HISTORY_RETENTION_DAYS, ge=1, le=3650),
+        db: AsyncSession = Depends(get_db),
+        _: User = Depends(require_task_write),
+    ) -> Result[dict]:
+        deleted = await task_history.purge_history(db, days)
+        return result.ok(data={"deleted": deleted, "days": days}, message="历史已清理")
 
     @_router.post(
         "/dispatch",

@@ -109,6 +109,7 @@
 | `TASK_STREAM` / `TASK_GROUP` / `TASK_RESULT_TTL` / `TASK_MAX_RETRIES` | `task:jobs` / `task:workers` / `86400` / `3` | redis 后端：Stream 键与消费组、结果哈希 TTL、失败重试次数 |
 | `TASK_BLOCK_MS` / `TASK_CLAIM_MIN_IDLE_MS` / `TASK_RECLAIM_INTERVAL` | `5000` / `60000` / `30.0` | redis 后端：阻塞读取毫秒、pending 回收空闲阈值、sweeper 扫描间隔 |
 | `TASK_TASKS_MODULE` / `TASK_CONSUMER_NAME` | `app.tasks` / 空 | redis 后端：具名任务定义模块、worker 消费者名前缀（空=主机名-pid） |
+| `TASK_PERSIST_HISTORY` / `TASK_HISTORY_RETENTION_DAYS` | `true` / `30` | 执行历史：是否把每次运行落库到 `task_run`、保留天数（示例定时任务 `cleanup_task_history` 按此清理） |
 | `ENABLE_SCHEDULER` / `SCHEDULER_TIMEZONE` / `SCHEDULER_LOCK_TTL` | `false` / `UTC` / `3600` | 定时任务调度插件：开关、cron 求值时区（IANA 名）、多实例防重复投递锁 TTL。**时区依赖 `tzdata`（已列入依赖）**：Windows 与精简基础镜像没有系统 IANA 库，缺包时连 `ZoneInfo("UTC")` 都会抛 `ZoneInfoNotFoundError`；`Scheduler._timezone()` 的兜底用 `timezone.utc`（纯固定偏移，不依赖 tz 库），**不要改回 `ZoneInfo("UTC")`**，否则时区异常会让 lifespan 中断、服务起不来 |
 | `FRONTEND_DIST_DIR` | `frontend/dist` | 前端构建产物目录，存在时由后端托管为 SPA（API 路由优先匹配） |
 
@@ -152,7 +153,8 @@ uv run python scripts/seed_rbac.py
 - `POST /api/v1/auth/bootstrap`（初始化首个管理员）：空库且 `ALLOW_BOOTSTRAP` 打开时免鉴权创建首个管理员，自动播种 RBAC 并授予 `super_admin`；已初始化返回 409，开关关闭返回 403。前端通过 `GET /api/v1/info` 的 `needs_bootstrap` 决定是否展示该入口。
 - `POST /api/v1/user/`（日常创建后台账号）：**恒需**有效 admin 令牌 + `user:write` 权限，否则 401/403。与自举端点分离，避免空库状态下退化为免鉴权入口。密码策略：8-64 位且同时包含字母和数字；name 2-32 位、去空白后非空；email 统一 `lower().strip()` 归一化。
 - `GET /api/v1/audit/logs`：需 `audit:read` 权限（审计日志含操作者与来源 IP，只校验登录态会让任意后台账号读到全量）。种子权限为 `user:read/write`、`member:read/write`、`role:read/write`、`permission:read`、`audit:read`、`task:read/write`；`admin` 含 `audit:read` 与 `task:read/write`，`viewer` 不含。前端权限码与后端必须同步，且菜单/路由守卫用 `permissionStore.can()`（含 super_admin 放行），不要用 `has()`。
-- 异步任务观测接口 `GET /api/v1/tasks`、`GET /api/v1/scheduler` 需 `task:read`，`POST /api/v1/tasks/dispatch`（手动投递具名任务）需 `task:write`；守卫定义在插件模块级常量 `require_task_read` / `require_task_write`（测试用 `dependency_overrides` 放行）。前端「异步任务」页（`/tasks`，`TaskManageView.vue`）消费这三个接口，插件未启用时接口 404，页面按「未启用」空态渲染。
+- 异步任务观测接口 `GET /api/v1/tasks`、`GET /api/v1/scheduler`、`GET /api/v1/tasks/history` 需 `task:read`，`POST /api/v1/tasks/dispatch`（手动投递具名任务）与 `DELETE /api/v1/tasks/history`（按 `?days=` 清理历史）需 `task:write`；守卫定义在插件模块级常量 `require_task_read` / `require_task_write`（测试用 `dependency_overrides` 放行）。前端「异步任务」页（`/tasks`，`TaskManageView.vue`）消费这几个接口，插件未启用时接口 404，页面按「未启用」空态渲染。
+- **任务执行历史**（`app/models/task.py::TaskRun` + `app/repositories/task.py` + `app/services/task.py`）：memory 后端的 `submit()`/`_execute()` 与 redis 后端的 `_redis_enqueue()`/`tasks_worker._process()` 都在状态变化点调用 `task_history.record_run(...)`，按 `job_id` **覆盖式 upsert**（一次运行最终只留一条记录，不是每变一次状态插一行）；`result` 走 JSON 序列化并截断 500 字。**落库必须是 fail-safe 旁路**：`record_run` 自己开 `AsyncSessionLocal()` 并自己 commit，任何异常只 `logger.warning`，绝不能让写库失败影响任务执行或接口返回。历史表按时间倒序（`enqueued_at.desc(), id.desc()`）分页，时间列是 naive UTC（与 `TaskHistoryQuery` 的入参归一化一致）。
 - 登录（`/api/v1/auth/login`、`/api/v1/member/login`）：账号不存在、密码错误、账号禁用（`is_active=False`）一律 401，不泄露账号状态；用户不存在时服务端做 dummy 哈希校验拉平响应耗时。
 - 邮箱撞唯一约束（含并发、软删后重建）返回 409。
 - 分页：`GET /api/v1/user/`、`GET /api/v1/member/`（均 admin 鉴权）返回 `Result[Page[T]]`（`total`/`items`/`page`/`page_size`）；参数 `page≥1`、`page_size` 1-100 默认 20，越界 422。
@@ -189,6 +191,7 @@ uv run pytest        # 测试目录 tests/，无需 MySQL/Redis
 
 - `tests/conftest.py` 用 SQLite 内存库（aiosqlite + `StaticPool`）通过 `app.dependency_overrides` 覆盖 `get_db`；每个测试后自动清空所有表（autouse fixture）；测试内需直接查库/造数时用 `run_db(async_fn)` 同步包装执行异步操作。
 - Redis 由 conftest 中的内存 `FakeRedis` 隔离（autouse monkeypatch 替换 `app.main.create_redis`，`/health` 使用的引擎同步替换为测试库），测试不依赖真实 MySQL/Redis；`broken_redis` fixture 可将 Redis 置为故障态，供 degraded 用例使用。
+- autouse fixture `disable_task_history` 默认把 `TASK_PERSIST_HISTORY` 置为 `False`，避免跑任务相关用例时旁路写库牵扯真实连接；需要断言落库行为的用例（如 `tests/test_task_history.py`）在内部显式改回 `True`。
 - 测试通过 `TestClient`（`client` fixture）走完整 HTTP 链路，覆盖认证、校验错误、统一响应格式等。
 - 新增功能应在 `tests/` 下补充对应 API 测试，断言统一响应的 `code`/`data` 字段。
 - pytest 默认带 `--cov=app`（addopts 已配置，coverage 门槛见 CI 的 `--cov-fail-under`）。

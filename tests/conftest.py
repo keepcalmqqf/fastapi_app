@@ -169,6 +169,16 @@ def disable_i18n(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def disable_task_history(monkeypatch: pytest.MonkeyPatch):
+    """默认关闭执行历史落库：record_run 自己开 AsyncSessionLocal（指向 .env 里的库），
+    而单测用的是 SQLite 内存库，不关掉会去连真实 MySQL。落库本身由
+    tests/test_task_history.py 单独覆盖（在那里显式打开并替换会话工厂）。
+    """
+    monkeypatch.setattr(settings, "TASK_PERSIST_HISTORY", False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_redis(monkeypatch: pytest.MonkeyPatch):
     """用 FakeRedis 替换 lifespan 中注入的 Redis 客户端，避免测试连接真实 Redis。"""
     fake_redis.reset()

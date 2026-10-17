@@ -93,6 +93,7 @@ CATALOGS: dict[str, dict[str, str]] = {
         "创建成功": "Created successfully",
         # 异步任务插件：手动投递具名任务的成功文案
         "任务已投递": "Task dispatched",
+        "历史已清理": "History purged",
         "服务正常": "Service is running",
         "部分依赖不可用": "Some dependencies are unavailable",
         # 失败响应文案（result.failure 现已默认翻译）
