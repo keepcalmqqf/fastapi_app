@@ -167,10 +167,15 @@ uv run python scripts/seed_rbac.py
 - **ruff** 负责 lint + format：`line-length = 100`，`target-version = py310`，启用规则集 `E, F, I, UP, B, ASYNC, SIM`。
 - `B008` 被有意忽略：FastAPI 依赖注入惯用法 `Depends()` 必须写在参数默认值里。
 - mypy 非 strict、`ignore_missing_imports = true`，排除 `alembic/versions/`。
+- **迁移文件只豁免 `ruff format`，不豁免 `ruff check`**（`[tool.ruff.format] exclude = ["alembic/versions/*.py"]`）。迁移由 alembic 按模板生成（单引号风格），每次 autogenerate 都会重新引入未格式化的文件，逐个手改没有意义；但生成的代码同样会有未使用导入之类的问题，`ruff check` 在那里抓到过真问题，不要一起排掉。注意排除模式必须写成 `目录/*.py`，只写目录名不生效。
 - 使用现代类型标注（`X | None` 而非 `Optional[X]`，ruff UP 规则强制）；Python 3.10+ 语法。
 - ORM 使用 SQLAlchemy 2.0 风格（`Mapped[...]` + `mapped_column`）。
 - 提交前检查：`uv run ruff check .` 和 `uv run ruff format .`；可选 `pre-commit install` 自动执行。
 - 注释和文档字符串使用中文。
+
+### 容器时区固定为 UTC
+
+`Dockerfile` 里 `ENV TZ=UTC`（不是 `Asia/Shanghai`）。这与第 6 条「时间源统一为应用侧 UTC」是同一件事的两面：MySQL 容器不设 TZ（即 UTC），应用容器一旦改成本地时区，日志时间戳与任何一处漏写 `tzinfo` 的 `datetime.now()` 都会与库内时间差 8 小时，且只在生产暴露——本地与测试都是 UTC，复现不了。`tzdata` 仍要装（apt 的给日志/libc 用，pip 的给 `zoneinfo` 用，两者互不替代）。
 
 ## 前端约定
 
