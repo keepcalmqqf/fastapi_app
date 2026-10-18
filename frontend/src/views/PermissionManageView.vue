@@ -13,6 +13,8 @@ async function loadPermissions() {
   try {
     const res = await listPermissions()
     permissions.value = res.data
+  } catch {
+    // 同 UserManageView：onMounted 不接管 Promise，缺这段就是 unhandled rejection
   } finally {
     loading.value = false
   }

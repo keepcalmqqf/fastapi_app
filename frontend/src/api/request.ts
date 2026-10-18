@@ -41,15 +41,38 @@ const request = axios.create({
 // bootstrap 自身失败（如已初始化返回 409）不应触发静默刷新
 const NO_RETRY_PATHS = ['/api/v1/auth/refresh', '/api/v1/auth/login', '/api/v1/auth/bootstrap']
 
-// 可选能力的探测接口：404 表示插件未启用，属正常分支，不该弹错误提示
-const SILENT_404_PATHS = ['/api/v1/i18n/', '/api/v1/tasks', '/api/v1/scheduler']
+// 可选能力的探测接口：404 表示插件未启用，属正常分支，不该弹错误提示。
+// 这里写「插件路由前缀」而非具体路径：插件一停，整个 router 都不挂载，前缀下的
+// 所有子路径都会 404，逐个列举既冗长又会在加接口时漏掉。
+const SILENT_404_PREFIXES = ['/api/v1/i18n', '/api/v1/tasks', '/api/v1/scheduler']
+
+/**
+ * 去掉 query 与 hash，只留参与路由匹配的路径部分。
+ * 不剥离的话 `?redirect=/api/v1/tasks` 这类参数会让下面的前缀判断误命中。
+ */
+function requestPath(url?: string): string {
+  return (url ?? '').split(/[?#]/)[0]
+}
+
+/**
+ * 按「路径段」匹配，而不是子串包含。
+ *
+ * `url.includes(p)` 会把段边界之外的内容也算命中：`/api/v1/tasks` 会吞掉
+ * `/api/v1/tasks-archive` 的真实 404，回跳地址之类的查询参数更容易误伤。改成
+ * 判「相等」或「以下一段分隔开头」后，只有真正落在前缀下的接口才被静默。
+ */
+function matchesPath(url: string | undefined, prefixes: string[]): boolean {
+  const path = requestPath(url)
+  if (!path) return false
+  return prefixes.some((p) => path === p || path.startsWith(`${p}/`))
+}
 
 function isNoRetryPath(url?: string): boolean {
-  return !!url && NO_RETRY_PATHS.some((p) => url.includes(p))
+  return matchesPath(url, NO_RETRY_PATHS)
 }
 
 function isSilent404Path(url?: string): boolean {
-  return !!url && SILENT_404_PATHS.some((p) => url.includes(p))
+  return matchesPath(url, SILENT_404_PREFIXES)
 }
 
 // 请求拦截器：不再注入 Authorization（令牌在 HttpOnly cookie 中），
@@ -162,7 +185,7 @@ request.interceptors.response.use(
       return handleUnauthorized(error, message)
     }
     // refresh 失败时清空登录态并跳转；login 失败停留在当前页（静默，登录页自行展示错误）
-    if (error.config?.url?.includes('/api/v1/auth/refresh')) {
+    if (matchesPath(error.config?.url, ['/api/v1/auth/refresh'])) {
       clearSessionAndRedirect(translate('登录已过期，请重新登录'))
     }
     const authError = new Error(message) as AuthError

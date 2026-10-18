@@ -25,11 +25,12 @@ export const usePermissionStore = defineStore('permission', () => {
     loaded.value = false
   }
 
-  // 是否拥有指定权限（任一满足，requireAll=false 时）；默认按 code 精确匹配
-  function has(code: string, requireAll = true): boolean {
-    const perms = permissionCodes.value
-    if (requireAll) return perms.includes(code)
-    return perms.includes(code)
+  // 是否拥有指定权限，按 code 精确匹配。
+  // 只判单个 code，「全部满足/任一满足」的语义由 hasAll / hasAny 承担：此前这里有个
+  // requireAll 参数，但两个分支实现完全相同（都只判单个 code），留着会让调用方误以为
+  // 传 true 就是在校验多个权限。
+  function has(code: string): boolean {
+    return permissionCodes.value.includes(code)
   }
 
   // 是否拥有给定权限列表中的任一个

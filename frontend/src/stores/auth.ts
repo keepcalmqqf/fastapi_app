@@ -30,11 +30,23 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(email: string, password: string) {
     await apiLogin(email, password)
-    // 已建立会话：记下痕迹，之后刷新页面才会去探测 /user/me
+    // 先确认会话可用，再记下痕迹：此前先 markSession(true) 再 fetchMe()，
+    // 后者失败时界面报「登录失败」，可 Cookie 已建立、痕迹也已留下——
+    // 表现为「登录报错但刷新一下就好了」。这里让状态与界面提示保持一致。
+    try {
+      await fetchMe()
+    } catch (err) {
+      markSession(false)
+      throw err
+    }
     markSession(true)
-    await fetchMe()
-    // 登录成功后同步拉取权限（菜单/按钮级鉴权依赖）
-    await usePermissionStore().fetchPermissions()
+    // 权限拉取失败不应让登录失败：会话已建立，权限置空即可——菜单/按钮按无权限
+    // 渲染，用户可在控制台刷新重试，总好过卡在登录页却已经登录了。
+    try {
+      await usePermissionStore().fetchPermissions()
+    } catch {
+      usePermissionStore().reset()
+    }
   }
 
   async function logout() {
@@ -59,16 +71,26 @@ export const useAuthStore = defineStore('auth', () => {
       restored.value = true
       return
     }
+    // /user/me 失败才是「会话确实失效」；权限拉取失败不是。
+    // 此前两者共用一个 catch：一次权限接口抖动（Redis 抖动、RBAC 未补种导致的 403）
+    // 就会把已登录用户判成未登录，而且清掉会话痕迹后下次进站连探测都不做，
+    // 用户必须手动重新登录——可 Cookie 会话明明一直有效。
     try {
       await fetchMe()
-      // 恢复会话也要拉取权限，供导航守卫与菜单鉴权使用
-      await usePermissionStore().fetchPermissions()
     } catch {
       user.value = null
       markSession(false)
-    } finally {
       restored.value = true
+      return
     }
+    try {
+      // 恢复会话也要拉取权限，供导航守卫与菜单鉴权使用
+      await usePermissionStore().fetchPermissions()
+    } catch {
+      // 权限置空即可：导航守卫会按缺权限处理，不会把人踢出去
+      usePermissionStore().reset()
+    }
+    restored.value = true
   }
 
   return { user, restored, needsBootstrap, checkBootstrap, login, logout, restore, fetchMe }

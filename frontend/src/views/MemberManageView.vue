@@ -16,6 +16,9 @@ async function loadMembers() {
     const res = await listMembers(page.value, pageSize.value)
     members.value = res.data.items
     total.value = res.data.total
+  } catch {
+    // 同 UserManageView：onMounted / 分页 / 刷新按钮都不接管 Promise，
+    // 错误提示已由响应拦截器弹出，这里必须吞掉 rejection
   } finally {
     loading.value = false
   }

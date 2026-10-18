@@ -18,9 +18,14 @@ const form = reactive({
 
 // 初始化入口只在「库里还没有管理员」时出现；已初始化后不再暴露该入口
 const canBootstrap = ref(false)
-onMounted(async () => {
-  if (authStore.needsBootstrap === null) await authStore.checkBootstrap()
-  canBootstrap.value = authStore.needsBootstrap === true
+onMounted(() => {
+  // onMounted 不接管 Promise，这里必须自己 catch，否则探测失败就是 unhandled
+  // rejection；探测不到就按「不展示入口」处理，属可接受的降级
+  const probe = async () => {
+    if (authStore.needsBootstrap === null) await authStore.checkBootstrap()
+    canBootstrap.value = authStore.needsBootstrap === true
+  }
+  probe().catch(() => {})
 })
 
 // 校验提示也走词条：用 computed 而非常量，切换语种后重新校验即显示新语言
@@ -37,24 +42,30 @@ const rules = computed<FormRules>(() => ({
 
 async function onSubmit() {
   if (!formRef.value) return
-  await formRef.value.validate(async (valid) => {
-    if (!valid) return
-    loading.value = true
-    try {
-      await authStore.login(form.email, form.password)
-      ElMessage.success(t('登录成功'))
-      // 支持 401 跳转时携带的 redirect 回跳参数
-      const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-      router.push(redirect)
-    } catch (err) {
-      // 登录失败（如邮箱或密码错误）：响应拦截器已将后端 message 带出，
-      // 这里捕获并展示，避免 401 被 finally 静默吞掉
-      const msg = err instanceof Error ? err.message : t('登录失败，请重试')
-      ElMessage.error(msg)
-    } finally {
-      loading.value = false
-    }
-  })
+  // 必须用 Promise 形态而非回调形态：Element Plus 不会 await 传给 validate 的回调，
+  // 于是外层 await 在「校验结束」时就 resolve——登录请求可能还没发出去，而回调内部
+  // 抛出的异常也无处可去，直接变成 unhandled rejection。
+  try {
+    await formRef.value.validate()
+  } catch {
+    // 校验未通过，错误已由表单内联展示
+    return
+  }
+  loading.value = true
+  try {
+    await authStore.login(form.email, form.password)
+    ElMessage.success(t('登录成功'))
+    // 支持 401 跳转时携带的 redirect 回跳参数
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
+    router.push(redirect)
+  } catch (err) {
+    // 登录失败（如邮箱或密码错误）：响应拦截器已将后端 message 带出，
+    // 这里捕获并展示，避免 401 被 finally 静默吞掉
+    const msg = err instanceof Error ? err.message : t('登录失败，请重试')
+    ElMessage.error(msg)
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 

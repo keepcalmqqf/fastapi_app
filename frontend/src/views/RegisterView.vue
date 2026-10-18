@@ -48,21 +48,27 @@ const rules = computed<FormRules>(() => ({
 
 async function onSubmit() {
   if (!formRef.value) return
-  await formRef.value.validate(async (valid) => {
-    if (!valid) return
-    loading.value = true
-    try {
-      await bootstrapAdmin(form.name, form.email, form.password)
-      // 注册不种 cookie，继续调登录建立会话后直达首页
-      await authStore.login(form.email, form.password)
-      ElMessage.success(t('注册成功'))
-      router.push('/')
-    } catch {
-      // 失败提示（如 401 注册已关闭 / 409 邮箱已存在）已由响应拦截器统一展示
-    } finally {
-      loading.value = false
-    }
-  })
+  // 同 LoginView：必须用 Promise 形态，Element Plus 不会 await 传给 validate 的
+  // 回调，回调形态下这里只等到「校验结束」，注册请求还没发出去就 resolve 了，
+  // 回调内的异常也无处可去
+  try {
+    await formRef.value.validate()
+  } catch {
+    // 校验未通过，错误已由表单内联展示
+    return
+  }
+  loading.value = true
+  try {
+    await bootstrapAdmin(form.name, form.email, form.password)
+    // 注册不种 cookie，继续调登录建立会话后直达首页
+    await authStore.login(form.email, form.password)
+    ElMessage.success(t('注册成功'))
+    router.push('/')
+  } catch {
+    // 失败提示（如 401 注册已关闭 / 409 邮箱已存在）已由响应拦截器统一展示
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 

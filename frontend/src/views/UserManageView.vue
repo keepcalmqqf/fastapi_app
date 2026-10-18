@@ -39,6 +39,10 @@ async function loadUsers() {
     const res = await listUsers(page.value, pageSize.value)
     users.value = res.data.items
     total.value = res.data.total
+  } catch {
+    // 列表加载是「发出即忘」：错误提示已由响应拦截器统一弹出，这里吞掉即可。
+    // 不能让 rejection 冒出去——onMounted、分页回调、刷新按钮都不接管返回的
+    // Promise，漏了这段就是 unhandled rejection。
   } finally {
     loading.value = false
   }
