@@ -9,7 +9,6 @@ from starlette.testclient import TestClient
 from app.core.result import Result
 from app.core.settings import settings
 from app.plugins.i18n import (
-    CATALOGS,
     default_locale,
     resolve_locale,
     setup,
@@ -109,9 +108,20 @@ def test_locked_login_message_is_translated(i18n_enabled, monkeypatch: pytest.Mo
 
 
 def test_translate_supports_placeholder_interpolation():
-    catalog = CATALOGS["en-US"]
-    assert "缺少：{missing}" not in catalog  # 插值失败也不应抛异常
-    assert translate("权限不足", locale="en-US", missing="user:read") == "Permission denied"
+    """占位插值：词条里的 {missing} 应被 params 替换。
+
+    此前期望值 "Permission denied" 本身不含占位符——把插值逻辑整个删掉，这条
+    用例也照样通过，它测的是「翻译」而不是「插值」。
+    """
+    assert (
+        translate("权限不足，缺少：{missing}", locale="en-US", missing="user:read")
+        == "Permission denied, missing: user:read"
+    )
+    # 参数与占位符不匹配时插值失败，回落为未替换的模板而不是抛异常
+    assert (
+        translate("权限不足，缺少：{missing}", locale="en-US")
+        == "Permission denied, missing: {missing}"
+    )
 
 
 def test_i18n_endpoints_expose_catalog():
