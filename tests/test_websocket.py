@@ -94,6 +94,55 @@ def test_valid_token_connects_and_echoes(monkeypatch: pytest.MonkeyPatch):
         assert msg2["data"] == {"k": "v"}
 
 
+def test_member_token_rejected_by_audience(monkeypatch: pytest.MonkeyPatch):
+    """会员令牌（aud=member）不得进入后台 WS 通道。
+
+    后台管理员与会员是两套账号体系、id 各自独立自增。少了受众校验时，会员令牌
+    能直接握手成功，且连接元数据里只有裸 user_id——admin id=1 与 member id=1
+    在 WS 侧完全无法区分，下游按 user_id 判权会串号。
+    """
+    app = _make_app(monkeypatch)
+    member_token = _token(subject="1", aud="member")
+    with (
+        TestClient(app) as c,
+        pytest.raises(WebSocketDisconnect) as exc,
+        c.websocket_connect(f"/ws?token={member_token}"),
+    ):
+        pass
+    assert exc.value.code == 1008
+
+
+def test_revoked_subject_rejected(monkeypatch: pytest.MonkeyPatch):
+    """账号被撤销后，其令牌不得再建立新连接。
+
+    少了主体撤销校验，被删/停用账号的**已建立**连接会一直存活到令牌自然过期
+    （默认 30 分钟），期间照常收发业务消息；这里守住的是撤销之后的新握手。
+    """
+    app = _make_app(monkeypatch)
+    fake_redis._data["revoke:admin:123"] = "9999999999"
+    try:
+        with (
+            TestClient(app) as c,
+            pytest.raises(WebSocketDisconnect) as exc,
+            c.websocket_connect(f"/ws?token={_token()}"),
+        ):
+            pass
+        assert exc.value.code == 1008
+    finally:
+        fake_redis._data.pop("revoke:admin:123", None)
+
+
+def test_connection_meta_carries_audience(monkeypatch: pytest.MonkeyPatch):
+    """连接元数据带 aud：只有 user_id 时两套体系无从区分。"""
+    app = _make_app(monkeypatch)
+    with TestClient(app) as c, c.websocket_connect(f"/ws?token={_token()}") as conn:
+        conn.receive_json()  # welcome
+        # 必须在连接存续期间检查：断开后 disconnect() 会清掉元数据
+        metas = list(ws_plugin.websocket_manager._meta.values())
+        assert metas and metas[0]["aud"] == "admin"
+        assert metas[0]["user_id"] == 123
+
+
 def test_cookie_auth_fallback(monkeypatch: pytest.MonkeyPatch):
     """同源 Cookie 兜底：不传 query token 时取 access_token Cookie。"""
     app = _make_app(monkeypatch)

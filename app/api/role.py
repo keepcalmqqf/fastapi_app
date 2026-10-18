@@ -52,7 +52,6 @@ async def create_role(
     if created is None:
         raise HTTPException(status_code=409, detail="角色 code 已存在")
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_CREATE_USER,
@@ -87,7 +86,6 @@ async def update_role(
     fields = data.model_dump(exclude_unset=True)
     await rbac_service.update_role(db, role, fields)
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_UPDATE_USER,
@@ -112,7 +110,6 @@ async def delete_role(
         raise HTTPException(status_code=400, detail="系统内置角色不可删除")
     await rbac_service.delete_role(db, role)
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_DELETE_USER,
@@ -139,7 +136,6 @@ async def set_role_permissions(
     role = await _load_role_or_404(db, role_id)
     await rbac_service.set_role_permissions(db, role, data.permission_codes)
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_UPDATE_USER,

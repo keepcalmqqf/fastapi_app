@@ -1,6 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.settings import settings
 from app.models import Member
 from tests.conftest import run_db
 
@@ -62,7 +63,31 @@ def test_register_member(client):
     assert "created_at" in data and "updated_at" in data
 
 
-def test_register_member_duplicate_email(client):
+def test_register_member_duplicate_email_does_not_reveal_existence(client):
+    """重复注册不回 409：否则该端点就是个「某邮箱是否已注册」的匿名查询接口。
+
+    断言要点是两次响应**完全一致**（状态码 + code + message + data），调用方拿不到
+    任何区分信号；提示邮件由 mailer 负责投递，不影响响应。
+    """
+    first = client.post("/api/v1/member/register", json=MEMBER_PAYLOAD)
+    second = client.post("/api/v1/member/register", json=MEMBER_PAYLOAD)
+    assert second.status_code == 200
+    body = second.json()
+    assert body["code"] == 200
+    assert body["data"] is None
+    # 关键：响应里不能有任何字段暗示该邮箱已存在，否则枚举仍然成立
+    assert "已注册" not in body["message"]
+    assert "存在" not in body["message"]
+    # 首次注册是成功的，data 有内容——说明上面的 data=None 是「不泄露」而非固定行为
+    assert first.json()["data"]["email"] == MEMBER_PAYLOAD["email"]
+
+
+def test_register_member_duplicate_email_can_be_revealed(client, monkeypatch):
+    """显式开启 REGISTER_REVEAL_EXISTING_EMAIL 时恢复 409 语义。
+
+    保留这个开关是因为部分业务需要前端即时报错；默认关闭（见上一条用例）。
+    """
+    monkeypatch.setattr(settings, "REGISTER_REVEAL_EXISTING_EMAIL", True)
     client.post("/api/v1/member/register", json=MEMBER_PAYLOAD)
     resp = client.post("/api/v1/member/register", json=MEMBER_PAYLOAD)
     assert resp.status_code == 409
@@ -223,12 +248,24 @@ def test_member_delete_me_revokes_token_and_blocks_login(client):
     assert login.status_code == 401
 
 
-def test_member_reregister_after_delete_conflicts(client):
-    """软删除不释放邮箱唯一约束：同邮箱再注册返回 409。"""
+def test_member_reregister_after_delete_conflicts(client, monkeypatch):
+    """软删除不释放邮箱唯一约束：同邮箱再注册不会创建出第二个账号。
+
+    默认配置下接口返回统一文案（不泄露邮箱已存在），故这里显式打开
+    REGISTER_REVEAL_EXISTING_EMAIL 拿到可断言的 409；真正要守住的是
+    「不会凭空多出一个会员」，用列表总数来断言。
+    """
+    monkeypatch.setattr(settings, "REGISTER_REVEAL_EXISTING_EMAIL", True)
     token = _register_and_login(client)
     client.delete("/api/v1/member/me", headers={"Authorization": f"Bearer {token}"})
     resp = client.post("/api/v1/member/register", json=MEMBER_PAYLOAD)
     assert resp.status_code == 409
+
+    async def _count_by_email(db: AsyncSession) -> int:
+        result = await db.execute(select(Member).where(Member.email == MEMBER_PAYLOAD["email"]))
+        return len(result.scalars().all())
+
+    assert run_db(_count_by_email) == 1
 
 
 def test_member_delete_revokes_other_device_tokens(client):

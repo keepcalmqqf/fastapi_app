@@ -277,6 +277,88 @@ def test_start_skips_missed_periods(monkeypatch):
     _run(scenario())
 
 
+def test_loop_sleep_is_measured_after_firing(monkeypatch):
+    """休眠时长按投递完成后的时刻计算，不能沿用循环体开头的陈旧时间。
+
+    用开头的 `now` 会把本轮投递耗时（抢锁 + 入队，含 Redis/DB 往返）算进睡眠，
+    下一个任务被系统性推迟；投递越慢，累计漂移越大。
+    """
+    monkeypatch.setattr(scheduler_plugin, "task_manager", TaskManager())
+    measured: list = []
+    fired_at: list = []
+
+    async def scenario() -> None:
+        sched = Scheduler()
+        sched.set_redis(FakeRedis())
+        sched.schedule("demo", "0 3 * * *")
+
+        real_seconds = sched._seconds_until_next
+
+        def _spy(now):
+            measured.append(now)
+            return real_seconds(now)
+
+        sched._seconds_until_next = _spy  # type: ignore[method-assign]
+
+        fired = asyncio.Event()
+
+        async def _slow_fire(_job, _scheduled):
+            # 模拟投递耗时：抢锁 + 入队各一次 Redis 往返
+            fired_at.append(utc_now())
+            await asyncio.sleep(0.3)
+            fired.set()
+
+        sched._fire = _slow_fire  # type: ignore[method-assign]
+
+        await sched.start()
+        try:
+            sched._jobs["demo"].next_run_at = utc_now() - timedelta(seconds=1)
+            sched._wakeup()
+            await asyncio.wait_for(fired.wait(), timeout=2.0)
+            # 让循环走完一次休眠计算
+            await asyncio.sleep(0.05)
+        finally:
+            await sched.stop()
+
+    _run(scenario())
+    assert measured and fired_at, "循环没有走到休眠计算"
+    # 休眠时长的基准时刻必须晚于投递开始的时刻；沿用循环体开头的 now 时，
+    # 这里会是「早于投递」，差值即本轮投递耗时，会原样转嫁成下一次触发的延迟
+    assert measured[0] >= fired_at[0]
+
+
+def test_wakeup_during_firing_is_not_swallowed(monkeypatch):
+    """投递期间发起的唤醒要被保留，不能被随后的 clear 抹掉。
+
+    先投递后清标记时，任务函数里动态登记的新计划（或外部改期）发出的 `_wakeup()`
+    会被抹掉，新计划要等当前休眠周期走完才被看到，最长延迟一整个周期。
+    """
+    monkeypatch.setattr(scheduler_plugin, "task_manager", TaskManager())
+
+    async def scenario() -> None:
+        sched = Scheduler()
+        sched.set_redis(FakeRedis())
+        sched.schedule("demo", "0 3 * * *")
+
+        async def _registering_fire(_job, _scheduled):
+            # 模拟任务执行期间外部登记了新计划并唤醒调度循环
+            sched.schedule("late", "0 4 * * *")
+            sched._wakeup()
+
+        sched._fire = _registering_fire  # type: ignore[method-assign]
+        await sched.start()
+        try:
+            sched._jobs["demo"].next_run_at = utc_now() - timedelta(seconds=1)
+            sched._wakeup()
+            # 循环回到 wait 时应因唤醒标记而立刻返回；被抹掉的话这里会超时
+            assert sched._wake is not None
+            await asyncio.wait_for(sched._wake.wait(), timeout=0.5)
+        finally:
+            await sched.stop()
+
+    _run(scenario())
+
+
 # ------------------------------------------------------------------ 插件集成
 def test_scheduler_endpoint_lists_jobs(monkeypatch):
     monkeypatch.setattr(settings, "ENABLE_SCHEDULER", True)

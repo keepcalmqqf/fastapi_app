@@ -8,6 +8,8 @@
 # mypy 无法从生成的 __init__ 签名中识别，故在本文件内豁免该错误码。
 # mypy: disable-error-code=call-arg
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.engine import make_url
@@ -15,6 +17,16 @@ from sqlalchemy.engine import make_url
 from app.core.settings import _DEV_SECRET_KEY, Settings
 
 STRONG_KEY = "x" * 32  # 恰好 32 字节，为允许下限
+STRONG_REDIS = "strong-redis-password"
+
+# PROD 用例的最小可用凭据组合：SECRET_KEY / MYSQL_PASSWORD / REDIS_PASSWORD 缺一即启动失败
+_PROD_ENV: dict[str, Any] = {
+    "MODE": "PROD",
+    "SECRET_KEY": STRONG_KEY,
+    "MYSQL_PASSWORD": "strong-password",
+    "REDIS_PASSWORD": STRONG_REDIS,
+    "_env_file": None,
+}
 
 
 @pytest.fixture(autouse=True)
@@ -48,20 +60,44 @@ def test_secret_key_at_minimum_length_accepted():
 def test_prod_requires_explicit_secret_key():
     """PROD 模式沿用开发默认密钥时拒绝启动。"""
     with pytest.raises(ValidationError):
-        Settings(MODE="PROD", MYSQL_PASSWORD="strong-password", _env_file=None)
+        Settings(**{**_PROD_ENV, "SECRET_KEY": _DEV_SECRET_KEY})
+    # 空串同样拒绝：漏配变量时 compose 会把它替换成空串
+    with pytest.raises(ValidationError):
+        Settings(**{**_PROD_ENV, "SECRET_KEY": ""})
 
 
 def test_prod_requires_explicit_mysql_password():
     """PROD 模式沿用默认 MySQL 密码时拒绝启动。"""
     with pytest.raises(ValidationError):
-        Settings(MODE="PROD", SECRET_KEY=STRONG_KEY, _env_file=None)
+        Settings(**{**_PROD_ENV, "MYSQL_PASSWORD": "123456"})
+
+
+def test_prod_rejects_blank_mysql_password():
+    """PROD 模式必须拒绝空密码。
+
+    回归：此前只做 `MYSQL_PASSWORD == "123456"` 的等值比较，而 docker compose 会把
+    .env 里漏配的 ${MYSQL_PASSWORD} 替换成空串，空串不等于默认值于是校验通过——
+    生产 MySQL 以 root 空密码上线。漏配比沿用默认值更容易发生，也更难发现。
+    """
+    with pytest.raises(ValidationError):
+        Settings(**{**_PROD_ENV, "MYSQL_PASSWORD": ""})
+
+
+def test_prod_requires_explicit_redis_password():
+    """PROD 模式必须配置 Redis 密码。
+
+    Redis 存的是 refresh 令牌 jti、令牌黑名单与限流计数；空密码既裸奔这些凭据，
+    也会让应用连不上带 --requirepass 的 Redis（表现为全员刷新令牌 401）。
+    """
+    with pytest.raises(ValidationError):
+        Settings(**{**_PROD_ENV, "REDIS_PASSWORD": None})
+    with pytest.raises(ValidationError):
+        Settings(**{**_PROD_ENV, "REDIS_PASSWORD": ""})
 
 
 def test_prod_accepts_strong_secret_key_and_password():
     """PROD 模式下显式配置强密钥与密码可正常启动，主机名回落到 docker 服务名。"""
-    s = Settings(
-        MODE="PROD", SECRET_KEY=STRONG_KEY, MYSQL_PASSWORD="strong-password", _env_file=None
-    )
+    s = Settings(**_PROD_ENV)
     assert s.MYSQL_HOST == "mysql"
     assert s.REDIS_HOST == "redis"
     assert s.docs_enabled is False  # PROD 默认关闭 API 文档
@@ -75,22 +111,8 @@ def test_prod_metrics_enabled_requires_token():
     「未配置」从而静默把 /metrics 变成公开端点。
     """
     with pytest.raises(ValidationError):
-        Settings(
-            MODE="PROD",
-            SECRET_KEY=STRONG_KEY,
-            MYSQL_PASSWORD="strong-password",
-            ENABLE_METRICS=True,
-            METRICS_TOKEN="",
-            _env_file=None,
-        )
-    s = Settings(
-        MODE="PROD",
-        SECRET_KEY=STRONG_KEY,
-        MYSQL_PASSWORD="strong-password",
-        ENABLE_METRICS=True,
-        METRICS_TOKEN="metrics-secret",
-        _env_file=None,
-    )
+        Settings(**{**_PROD_ENV, "ENABLE_METRICS": True, "METRICS_TOKEN": ""})
+    s = Settings(**{**_PROD_ENV, "ENABLE_METRICS": True, "METRICS_TOKEN": "metrics-secret"})
     assert s.METRICS_TOKEN == "metrics-secret"
 
 
@@ -122,9 +144,7 @@ def test_cors_origin_list_splits_and_trims():
 
 def test_mode_is_case_insensitive():
     """MODE 去空白并转大写后比较：`prod` 此前会被当成 DEV，整套生产策略失效。"""
-    s = Settings(
-        MODE=" prod ", SECRET_KEY=STRONG_KEY, MYSQL_PASSWORD="strong-password", _env_file=None
-    )
+    s = Settings(**{**_PROD_ENV, "MODE": " prod "})
     assert s.MODE == "PROD"
     assert s.docs_enabled is False
     assert s.cookie_secure is True
@@ -194,10 +214,5 @@ def test_wildcard_cors_origin_rejected():
 def test_bootstrap_allowed_defaults_to_mode():
     """空库自举开关：DEV 默认开、PROD 默认关，显式设置优先。"""
     assert Settings(_env_file=None).bootstrap_allowed is True
-    assert (
-        Settings(
-            MODE="PROD", SECRET_KEY=STRONG_KEY, MYSQL_PASSWORD="strong-password", _env_file=None
-        ).bootstrap_allowed
-        is False
-    )
+    assert Settings(**_PROD_ENV).bootstrap_allowed is False
     assert Settings(ALLOW_BOOTSTRAP=False, _env_file=None).bootstrap_allowed is False

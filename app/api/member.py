@@ -41,7 +41,13 @@ router = APIRouter(prefix="/member", tags=["会员"])
 async def register(data: RegisterMember, db: AsyncSession = Depends(get_db)) -> Result[MemberOut]:
     member = await member_service.register(db, data)
     if member is None:
-        raise HTTPException(status_code=409, detail="邮箱已被注册")
+        # 默认不回 409：那等于向匿名请求者开放「某邮箱是否已注册」的查询接口，
+        # 与登录侧刻意做的「不泄露账号状态」口径相反。改为统一文案 + 向该邮箱
+        # 投递「账号已存在」提示邮件，真实用户仍能拿到可操作的引导。
+        if settings.REGISTER_REVEAL_EXISTING_EMAIL:
+            raise HTTPException(status_code=409, detail="邮箱已被注册")
+        await email_verify_service.notify_account_exists(data.email)
+        return result.ok(data=None, message="注册请求已受理，若邮箱未注册将收到验证邮件")
     # 注册即投递验证邮件；投递失败不影响注册结果
     await email_verify_service.send_verification(
         aud="member", subject_id=member.id, email=member.email
@@ -83,7 +89,6 @@ async def login(
     member = await member_service.authenticate(db, data.email, data.password)
     if member is None:
         await audit_service.record(
-            db,
             actor_type="system",
             actor_id=None,
             action=ACTION_LOGIN_FAILED,
@@ -154,7 +159,6 @@ async def change_password(
     # 与后台改密对称：终止该会员的全部会话（含其他设备）
     await revoke_subject("member", str(current_member.id), redis)
     await audit_service.record(
-        db,
         actor_type="member",
         actor_id=current_member.id,
         action=ACTION_CHANGE_MEMBER_PASSWORD,
@@ -203,7 +207,6 @@ async def delete_me(
     # 与后台软删用户对称：注销会员同样按主体撤销其全部令牌（覆盖其他设备的既有会话）
     await revoke_subject("member", str(current_member.id), redis)
     await audit_service.record(
-        db,
         actor_type="member",
         actor_id=current_member.id,
         action=ACTION_DELETE_MEMBER,

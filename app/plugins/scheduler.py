@@ -91,8 +91,13 @@ class Scheduler:
         # 兜底时区是纯偏移实现（timezone.utc），不依赖 IANA 库，故类型不是纯 ZoneInfo
         self._tz: ZoneInfo | timezone | None = None
 
-    def set_redis(self, client: Redis | None) -> None:
-        """注入 Redis 客户端（测试用；生产由 _acquire_lock 内部懒建）。"""
+    def set_redis(self, client: Any) -> None:
+        """注入 Redis 客户端（测试用；生产由 _acquire_lock 内部懒建）。
+
+        入参刻意放宽到 Any：测试注入的是内存假实现，只覆盖插件真正用到的那几条命令，
+        既无法实现完整 Redis 协议，也不该为了实现它而给假实现堆一堆空方法。内部
+        `self._redis` 仍按真实客户端标注，生产路径的类型检查不受影响。
+        """
         self._redis = client
 
     # ------------------------------------------------------------------ 注册
@@ -244,16 +249,23 @@ class Scheduler:
     # ------------------------------------------------------------------ 触发循环
     async def _loop(self) -> None:
         while not self._stopping:
+            # 先清唤醒标记再投递：`_fire` 期间登记或改期的计划会调用 `_wakeup()`，
+            # 若清除发生在其后，这次唤醒会被抹掉，新计划要等当前休眠周期走完才被
+            # 看到（默认最长 60 秒），表现为「动态加的任务迟迟不执行」。
+            assert self._wake is not None
+            self._wake.clear()
             now = utc_now()
             for job in list(self._jobs.values()):
                 if job.next_run_at is not None and job.next_run_at <= now:
                     scheduled = job.next_run_at
                     job.next_run_at = self._next_after(job, now)
                     await self._fire(job, scheduled)
-            assert self._wake is not None
-            self._wake.clear()
             with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(self._wake.wait(), timeout=self._seconds_until_next(now))
+                # 休眠时长按「投递完成后的时刻」计算：用循环体开头的 now 会把
+                # 本轮投递耗时（DB/Redis 往返）算进睡眠里，让下一个任务系统性延迟。
+                await asyncio.wait_for(
+                    self._wake.wait(), timeout=self._seconds_until_next(utc_now())
+                )
 
     async def _fire(self, job: ScheduledJob, scheduled: datetime) -> None:
         """到点投递：先抢分布式锁再 submit_named，投递失败只记日志不阻断循环。"""

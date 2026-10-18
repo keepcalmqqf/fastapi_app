@@ -1,3 +1,4 @@
+import hmac
 import logging
 from typing import Any
 
@@ -27,7 +28,9 @@ class _MetricsAuthMiddleware:
         if scope["type"] == "http" and scope.get("path") == "/metrics":
             headers = dict(scope.get("headers") or [])
             auth = headers.get(b"authorization", b"").decode("latin-1")
-            if auth != f"Bearer {self.token}":
+            # 常量时间比较：`!=` 在首个不同字节处立即返回，逐字节可测。令牌是长期
+            # 不变的静态 secret，值得用 compare_digest 消掉这个时序侧信道。
+            if not hmac.compare_digest(auth, f"Bearer {self.token}"):
                 response = JSONResponse(
                     status_code=401,
                     content=result.failure(code=401, message="未授权访问").model_dump(),

@@ -7,6 +7,7 @@
 2. 它还会绕过统一响应处理器，返回 slowapi 默认 body 并泄露限流阈值。
 """
 
+import pytest
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 from slowapi import Limiter
@@ -15,6 +16,7 @@ from starlette.staticfiles import StaticFiles
 
 from app.core.settings import settings
 from app.plugins import rate_limit as rate_limit_plugin
+from app.plugins import setup_plugins
 
 
 def _decorated_app() -> FastAPI:
@@ -101,6 +103,66 @@ def test_static_mount_is_not_rate_limited(monkeypatch, tmp_path):
         assert client.get("/api/ping").status_code == 200
         assert client.get("/api/ping").status_code == 200
         assert client.get("/api/ping").status_code == 429
+
+
+def test_route_match_result_is_cached_per_app():
+    """路由匹配结果按 app 缓存：同一路径只实测一次，且不同 app 之间互不串味。
+
+    缓存最怕两件事：一是「启动后加路由读到陈旧结果」，二是「跨 app 串味」。这里
+    直接观察 `_scan_api_routes` 的调用次数：第二次请求同路径必须是 0 次调用；换个
+    app 实例则重新实测。缓存未收敛的话，最外层中间件每个请求都要编译并遍历全表。
+    """
+    calls: list[str] = []
+    real_scan = rate_limit_plugin._scan_api_routes
+
+    def _spy(app, scope):
+        calls.append(str(scope.get("path", "")))
+        return real_scan(app, scope)
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(rate_limit_plugin, "_scan_api_routes", _spy)
+
+        def _app() -> FastAPI:
+            app = FastAPI()
+
+            @app.get("/api/ping")
+            async def ping():
+                return {"ok": True}
+
+            rate_limit_plugin.setup(app)
+            return app
+
+        app = _app()
+        with TestClient(app) as client:
+            client.get("/api/ping")
+            client.get("/api/ping")
+        # 首次实测，之后一律走缓存
+        assert calls.count("/api/ping") == 1, calls
+
+        # 换一个 app 实例：缓存按实例分桶，必须重新实测而不是复用上一个的结果
+        calls.clear()
+        with TestClient(_app()) as client:
+            client.get("/api/ping")
+        assert calls.count("/api/ping") == 1, calls
+    finally:
+        monkeypatch.undo()
+
+
+def test_route_match_cache_is_bounded():
+    """缓存必须有界：随机路径会不断塞入未命中条目，无界就是内存泄漏。"""
+    app = FastAPI()
+
+    @app.get("/api/ping")
+    async def ping():
+        return {"ok": True}
+
+    rate_limit_plugin.setup(app)
+    scope = {"type": "http", "method": "GET", "path": "/api/ping"}
+    for i in range(rate_limit_plugin._ROUTE_MATCH_CACHE_MAX + 10):
+        rate_limit_plugin._matches_api_route(app, {**scope, "path": f"/scan/{i}"})
+    cache = rate_limit_plugin._ROUTE_MATCH_CACHE[app]
+    assert len(cache) <= rate_limit_plugin._ROUTE_MATCH_CACHE_MAX
 
 
 def test_rate_limit_fails_open_on_storage_error(monkeypatch):
@@ -217,3 +279,41 @@ def test_incompatible_limiter_disables_rate_limiting():
 
     # 当前 slowapi 版本应完全兼容
     assert rate_limit_plugin._missing_internals(Limiter(key_func=get_remote_address)) == []
+
+
+def test_rate_limit_mounted_through_setup_plugins(monkeypatch):
+    """限流在真实的插件接线路径上生效（走 setup_plugins，而非手动 setup）。
+
+    AGENTS.md 记载过「限流整体静默失效」的历史缺陷，而此前的用例全是裸
+    FastAPI() + 手动 `rate_limit_plugin.setup(app)`——恰好没覆盖让它失效的那一层：
+    `setup_plugins` 里的开关登记与挂载顺序。生产（`docker-compose.prod.yml`）是显式
+    开启限流的，这条用例保证「开关打开 → 中间件真的挂上」这段接线不被改坏。
+    """
+    monkeypatch.setattr(settings, "ENABLE_RATE_LIMIT", True)
+    monkeypatch.setattr(settings, "RATE_LIMIT", "2/minute")
+    monkeypatch.setattr(settings, "RATE_LIMIT_STORAGE_URI", settings.RATE_LIMIT_MEMORY_STORAGE_URI)
+
+    app = FastAPI()
+
+    @app.get("/ping")
+    async def ping():
+        return {"ok": True}
+
+    # 与 main.py 一致：先注册路由，再统一挂载插件
+    setup_plugins(app)
+
+    with TestClient(app) as client:
+        assert client.get("/ping").status_code == 200
+        assert client.get("/ping").status_code == 200
+        resp = client.get("/ping")
+        assert resp.status_code == 429
+        # 超限响应仍是统一格式，不泄露阈值等内部信息
+        assert resp.json()["code"] == 429
+
+
+def test_rate_limit_stays_off_by_default():
+    """开关关闭时不应挂上任何限流中间件（插件可插拔的语义）。"""
+    from app.main import app as main_app
+
+    has_limiter = hasattr(main_app.state, "limiter")
+    assert has_limiter is settings.ENABLE_RATE_LIMIT

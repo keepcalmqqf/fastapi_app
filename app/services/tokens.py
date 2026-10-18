@@ -72,10 +72,25 @@ async def rotate_refresh_token(refresh_token: str, response: Response, redis: An
     # 主体级撤销优先于 jti 校验：账号被软删/禁用后不得再凭旧 refresh 换发新令牌
     if await is_subject_revoked(aud, subject, payload.get("iat"), redis):
         raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
-    stored = await redis.get(f"refresh:{jti}") if redis is not None else None
-    if stored is None:
-        raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
-    await redis.delete(f"refresh:{jti}")
+    # 取出并删除必须原子（GETDEL）：先 GET 再 DELETE 时，同一 refresh token 的两个
+    # 并发请求（多标签页同时静默刷新）会都读到值、都通过校验、都签发新令牌对，
+    # 「一次性使用」与「旧令牌重用即 401」的盗用检测在并发下形同虚设。
+    #
+    # Redis 不可用时 fail-open，与黑名单校验、主体撤销保持一致：令牌仍有签名与
+    # 过期时间兜底，只是暂时失去即时撤销能力。此前这里是全项目唯一的 fail-closed
+    # 旁路，Redis 一抖动就全站登录态集体掉线。
+    verified = False
+    if redis is not None:
+        try:
+            stored = await redis.getdel(f"refresh:{jti}")
+        except Exception:  # noqa: BLE001
+            logger.warning("刷新令牌 jti 校验失败，本次放行（fail-open）", exc_info=True)
+        else:
+            verified = True
+            if stored is None:
+                raise HTTPException(status_code=401, detail="刷新令牌无效或已过期")
+    if not verified:
+        logger.warning("刷新令牌 jti 未校验：Redis 不可用，fail-open 放行 aud=%s", aud)
     return await issue_tokens(subject=subject, aud=aud, response=response, redis=redis)
 
 

@@ -1,4 +1,4 @@
-from sqlalchemy import Integer, String
+from sqlalchemy import Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models import Base
@@ -13,6 +13,10 @@ class AuditLog(Base, TimestampMixin):
     """
 
     __tablename__ = "audit_log"
+    # created_at 是审计查询的主维度（按时间范围复盘），而它来自 TimestampMixin
+    # 且不带索引——本表只增不删、数据量最大，缺索引时一次时间范围查询就是全表
+    # 扫描 + 一次 COUNT 全表扫描。索引单独声明，避免给所有表的 created_at 都加上。
+    __table_args__ = (Index("ix_audit_log_created_at", "created_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # 操作者身份类型：admin / member / system

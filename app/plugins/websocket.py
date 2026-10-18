@@ -4,11 +4,14 @@
 - 开关 ENABLE_WEBSOCKET 关闭时 `setup` 不注册任何路由，行为与未集成完全一致。
 - 鉴权复用现有 JWT：浏览器对 WebSocket 握手无法自定义请求头，故令牌取自
   query 参数 `token`（跨域/小程序友好）或同源自动携带的 `access_token` Cookie
-  （与 REST 端点取令牌顺序一致）。验签失败 / 过期 / 非访问令牌一律拒绝握手
-  （1008 策略违规）。
-- 鉴权只做「签名 + 过期 + 类型 + 登出黑名单」四道轻量校验，不查库判断账号状态，
-  避免每次握手都打 DB。需要账号级实时状态（禁用/删除后立即断连）的业务，
-  可在自己的推送逻辑里用 `websocket_manager.meta(conn_id)["user_id"]` 重新核验。
+  （与 REST 端点取令牌顺序一致）。验签失败 / 过期 / 非访问令牌 / 受众不符 /
+  已登出 / 主体已撤销一律拒绝握手（1008 策略违规）。
+- 鉴权做「签名 + 过期 + 类型 + 受众 + 登出黑名单 + 主体撤销」六道轻量校验，
+  不查库判断账号状态，避免每次握手都打 DB。受众（aud）与主体撤销是后补的两道：
+  少了受众校验，会员令牌能直接进入后台推送通道，且 admin id=1 与 member id=1
+  在本通道无从区分；少了主体撤销，被删/停用账号的已建立连接会存活到令牌自然
+  过期。长连接存续期间的状态变化，业务层可用
+  `websocket_manager.meta(conn_id)` 里的 user_id / aud 重新核验。
 - 连接由 ConnectionManager 集中管理并暴露为模块级单例 `websocket_manager`，
   业务层可直接 `from app.plugins.websocket import websocket_manager` 后调用
   `broadcast(...)` 主动推送，无需改动本插件。
@@ -29,6 +32,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, WebSocketException
 
+from app.core.revocation import is_subject_revoked
 from app.core.security import decode_access_token
 from app.core.settings import settings
 
@@ -129,6 +133,13 @@ async def authenticate(websocket: WebSocket, token: str | None) -> int | None:
     subject = payload.get("sub")
     if not subject or not str(subject).isdigit():
         raise WebSocketException(code=_WS_POLICY_VIOLATION, reason="认证令牌无效或已过期")
+    # 受众校验：与 REST 端点一致地隔离两套账号体系。少这一道校验时，会员令牌
+    # 可以直接进入后台推送通道，且 WS 侧只存裸 user_id，admin id=1 与
+    # member id=1 无从区分，下游按 user_id 判权即串号。
+    audiences = settings.websocket_audience_list
+    aud = str(payload.get("aud") or "")
+    if audiences and aud not in audiences:
+        raise WebSocketException(code=_WS_POLICY_VIOLATION, reason="认证令牌受众不允许连接")
 
     # 登出黑名单校验：Redis 不可用时放行（fail-open），与 REST 端点行为一致
     redis = getattr(websocket.app.state, "redis", None)
@@ -141,6 +152,12 @@ async def authenticate(websocket: WebSocket, token: str | None) -> int | None:
             raise
         except Exception:  # noqa: BLE001
             logger.warning("WebSocket 黑名单查询失败，本次放行（fail-open）", exc_info=True)
+    # 主体级撤销：账号被软删/禁用后立即失效。少了这道校验，被删账号的已建立连接
+    # 会一直存活到 access token 自然过期（默认 30 分钟），期间照常收发业务消息。
+    # 握手只做这一次校验，长连接存续期间的撤销仍需业务层按需复核。
+    if await is_subject_revoked(aud, str(subject), payload.get("iat"), redis):
+        raise WebSocketException(code=_WS_POLICY_VIOLATION, reason="认证令牌已失效")
+    websocket.state.aud = aud
     return int(subject)
 
 
@@ -157,7 +174,10 @@ async def _handle_connection(websocket: WebSocket, token: str | None = None) -> 
 
     conn_id = uuid.uuid4().hex
     await websocket.accept()
-    await websocket_manager.connect(conn_id, websocket, {"user_id": subject})
+    # 元数据同时记 aud：只有 user_id 时两套账号体系的 id 无从区分
+    await websocket_manager.connect(
+        conn_id, websocket, {"user_id": subject, "aud": getattr(websocket.state, "aud", "")}
+    )
 
     try:
         # 通知本人连接成功，并广播上线事件给其余连接

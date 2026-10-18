@@ -1,7 +1,9 @@
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import result
@@ -20,6 +22,8 @@ from app.services import rbac as rbac_service
 from app.services import tokens as token_service
 from app.services import user as user_service
 from app.services.audit import ACTION_CHANGE_PASSWORD, ACTION_CREATE_USER, ACTION_LOGIN_FAILED
+
+logger = logging.getLogger("fastapi_app")
 
 router = APIRouter(prefix="/auth", tags=["认证"])
 
@@ -41,13 +45,26 @@ async def bootstrap(
     # 先判空库再创建：与创建动作在同一连接上顺序执行，缩小并发抢建窗口
     if not await user_service.needs_bootstrap(db):
         raise HTTPException(status_code=409, detail="管理员已初始化")
-    created = await user_service.create_user(db, data)
-    if created is None:
-        raise HTTPException(status_code=409, detail="邮箱已被注册")
-    await rbac_service.ensure_seeded(db)
-    await rbac_service.assign_role_to_user(db, created, rbac_service.SUPER_ADMIN_CODE)
+    # 「建用户 + 播种 RBAC + 授超管」必须在同一事务里：拆成多个事务时，第一次提交后
+    # 用户行就再也撤销不了，后续任一步失败都会留下「有用户、无角色」的残局——而
+    # needs_bootstrap 只判 users 表是否为空，残局下它恒为 False，本端点从此永久 409，
+    # 再也建不出管理员，只能手工跑 seed 脚本或改库恢复。
+    try:
+        created = await user_service.create_user(db, data, commit=False)
+        if created is None:
+            raise HTTPException(status_code=409, detail="邮箱已被注册")
+        await rbac_service.ensure_seeded(db, commit=False)
+        await rbac_service.assign_role_to_user(
+            db, created, rbac_service.SUPER_ADMIN_CODE, commit=False
+        )
+        await db.commit()
+    except IntegrityError:
+        # 并发自举撞种子数据的唯一约束：整体回滚，本请求退化为「已初始化」。
+        # 胜出的那个请求已把用户与 RBAC 一起提交，这里回滚不会留下残局。
+        await db.rollback()
+        logger.warning("并发自举撞唯一约束，本次请求整体回滚")
+        raise HTTPException(status_code=409, detail="管理员已初始化，请刷新后重试") from None
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=None,  # 自举场景尚无操作者
         action=ACTION_CREATE_USER,
@@ -94,7 +111,6 @@ async def login(
     if user is None:
         # 登录失败要留痕：连续失败是撞库/爆破的信号（限流仅按 IP 计数，审计可按时段复盘）
         await audit_service.record(
-            db,
             actor_type="system",
             actor_id=None,
             action=ACTION_LOGIN_FAILED,
@@ -161,7 +177,6 @@ async def change_password(
     # 撤销按签发时间判定，当前令牌同样失效，符合「改密后重新登录」的通行做法。
     await revoke_subject("admin", str(current_user.id), redis)
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_CHANGE_PASSWORD,

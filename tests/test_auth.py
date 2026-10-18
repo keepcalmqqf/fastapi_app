@@ -89,6 +89,61 @@ def test_refresh_rotates_and_rejects_reuse(client):
     assert resp.status_code == 401
 
 
+def test_refresh_rotation_is_atomic(client, monkeypatch):
+    """轮换必须是「取出即删除」（GETDEL），不是先 GET 再 DELETE。
+
+    两步之间存在窗口：同一 refresh token 的两个并发请求（多标签页同时静默刷新）
+    会都读到值、都通过校验、都签发新令牌对——「一次性使用」与「旧令牌重用即
+    401」的盗用检测在并发下完全失效。
+    """
+    calls: list[tuple[str, str]] = []
+    for name in ("get", "delete", "getdel"):
+        original = getattr(fake_redis, name)
+
+        def _spy(*args, _name=name, _orig=original, **kwargs):
+            calls.append((_name, str(args[0]) if args else ""))
+            return _orig(*args, **kwargs)
+
+        monkeypatch.setattr(fake_redis, name, _spy)
+
+    _create_admin(client)
+    refresh = _login(client).json()["data"]["refresh_token"]
+    client.cookies.clear()
+
+    # 只看刷新请求本身的调用：登录流程里 login_guard 也会用到 get / delete
+    calls.clear()
+    resp = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh})
+    assert resp.status_code == 200, resp.text
+
+    # 只看 refresh jti 那把 key（get 也会用于主体撤销标记 revoke:*，与本题无关）
+    jti_calls = [(name, key) for name, key in calls if key.startswith("refresh:")]
+    assert ("getdel", jti_calls[0][1]) in jti_calls, f"未走原子取删: {jti_calls}"
+    assert not [c for c in jti_calls if c[0] in ("get", "delete")], f"仍在分两步执行: {jti_calls}"
+
+
+def test_refresh_survives_redis_outage(client, monkeypatch):
+    """Redis 故障时刷新 fail-open，与其他旁路保持一致。
+
+    此前这里是全项目唯一 fail-closed 的旁路——黑名单、主体撤销、登录锁定都是
+    fail-open——Redis 一抖动，所有人的静默刷新全部变成 401/500，等于全站掉线。
+    令牌本身仍有签名与过期时间兜底，此时只是暂时失去即时撤销能力。
+    """
+    calls = {"getdel": 0}
+
+    async def _broken(*_args, **_kwargs):
+        calls["getdel"] += 1
+        raise ConnectionError("Redis 不可用（测试模拟）")
+
+    monkeypatch.setattr(fake_redis, "getdel", _broken)
+    _create_admin(client)
+    refresh = _login(client).json()["data"]["refresh_token"]
+    client.cookies.clear()
+
+    resp = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh})
+    assert resp.status_code == 200, resp.text
+    assert calls["getdel"] == 1
+
+
 def test_refresh_rejects_access_token(client):
     """access token 冒充 refresh token 返回 401（缺少 type=refresh）。"""
     _create_admin(client)
@@ -165,6 +220,32 @@ def test_cookie_read_request_needs_no_csrf_header(client):
     _login(client)
     resp = client.get("/api/v1/user/me")
     assert resp.status_code == 200
+
+
+def test_csrf_protects_all_write_methods(client):
+    """PATCH / DELETE / PUT 同样要 CSRF 头——此前的用例只覆盖了 POST。
+
+    前端最常用的写操作正是 PATCH（更新用户/会员/角色）与 DELETE（删用户/清历史），
+    只测 POST 意味着把 `_CSRF_METHODS` 改窄成 {"POST"} 也照样全绿。
+    """
+    _create_admin(client)
+    _login(client)  # TestClient 自动携带后续请求的 Cookie
+
+    payload = {**USER_PAYLOAD, "email": "lisi@test.com", "name": "李四"}
+    created = client.post("/api/v1/user/", json=payload, headers=CSRF_HEADER)
+    assert created.status_code == 200, created.text
+    user_id = created.json()["data"]["id"]
+
+    # PATCH：缺头 403，带头 200
+    patch = {"name": "王五"}
+    assert client.patch(f"/api/v1/user/{user_id}", json=patch).status_code == 403
+    patched = client.patch(f"/api/v1/user/{user_id}", json=patch, headers=CSRF_HEADER)
+    assert patched.status_code == 200
+
+    # DELETE：缺头 403（且不得产生副作用——用户仍在）
+    assert client.delete(f"/api/v1/user/{user_id}").status_code == 403
+    assert client.get("/api/v1/user/me").status_code == 200
+    assert client.delete(f"/api/v1/user/{user_id}", headers=CSRF_HEADER).status_code == 200
 
 
 def test_bearer_write_needs_no_csrf_header(client):

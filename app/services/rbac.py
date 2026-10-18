@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Permission, Role, User
 from app.models.base import utc_now
-from app.plugins.cache import get_redis
+from app.plugins.cache import get_redis_or_none
 from app.repositories import rbac as rbac_repo
 
 logger = logging.getLogger("fastapi_app")
@@ -56,7 +56,11 @@ _SEED_ROLES: tuple[tuple[str, str, tuple[str, ...], bool], ...] = (
 
 
 async def _invalidate_user_cache(user_id: int) -> None:
-    redis = get_redis()
+    # 用 get_redis_or_none：本函数总是在 db.commit() 之后调用，抛异常会让
+    # 「数据已改、接口却 500」。缓存是旁路，未初始化/失效只需告警。
+    redis = get_redis_or_none()
+    if redis is None:
+        return
     try:
         await redis.delete(f"{_PERM_CACHE_PREFIX}:{user_id}")
     except Exception:
@@ -69,7 +73,7 @@ async def invalidate_all_user_caches() -> None:
     权限集合由「用户→角色→权限」两跳推导，任意一跳变化都可能影响任意用户，
     故采用全量失效（写操作低频，代价可接受）。
     """
-    redis = get_redis()
+    redis = get_redis_or_none()
     if redis is None:
         return
     try:
@@ -85,7 +89,7 @@ async def get_user_role_codes(db: AsyncSession, user_id: int) -> set[str]:
 
 async def get_user_permission_codes(db: AsyncSession, user_id: int) -> set[str]:
     """用户权限 code 集合：优先命中 Redis 缓存，未命中则从库推导并回写。"""
-    redis = get_redis()
+    redis = get_redis_or_none()
     key = f"{_PERM_CACHE_PREFIX}:{user_id}"
     if redis is not None:
         try:
@@ -103,10 +107,14 @@ async def get_user_permission_codes(db: AsyncSession, user_id: int) -> set[str]:
     return codes
 
 
-async def ensure_seeded(db: AsyncSession) -> None:
+async def ensure_seeded(db: AsyncSession, *, commit: bool = True) -> None:
     """幂等播种角色与权限：仅当超级管理员角色不存在时才执行。
 
     空库自举创建首个管理员前调用，保证 RBAC 基础数据就绪；重复调用安全。
+
+    `commit=False` 交由调用方统一提交（仅 bootstrap 用）。并发自举时两个请求都会
+    走到这里并同时插入种子数据，后者撞 permission.code / role.code 唯一键抛
+    IntegrityError——不在这里吞掉，交给调用方整体回滚，避免留下半截数据。
     """
     if await rbac_repo.get_role_by_code(db, SUPER_ADMIN_CODE) is not None:
         return
@@ -116,7 +124,10 @@ async def ensure_seeded(db: AsyncSession) -> None:
     for code, name, perm_codes, is_system in _SEED_ROLES:
         role = await rbac_repo.create_role(db, name, code, is_system=is_system)
         await rbac_repo.set_role_permissions(db, role, [perms[c] for c in perm_codes if c in perms])
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
 
 
 async def ensure_seed_updates(db: AsyncSession) -> bool:
@@ -153,24 +164,32 @@ async def ensure_seed_updates(db: AsyncSession) -> bool:
     return changed
 
 
-async def assign_role_to_user(db: AsyncSession, user: User, role_code: str) -> bool:
-    """将某角色（整组替换）授予用户；角色不存在返回 False。"""
+async def assign_role_to_user(
+    db: AsyncSession, user: User, role_code: str, *, commit: bool = True
+) -> bool:
+    """将某角色（整组替换）授予用户；角色不存在返回 False。
+
+    `commit=False` 交由调用方统一提交（仅 bootstrap 用）。
+    """
     role = await rbac_repo.get_role_by_code(db, role_code)
     if role is None:
         return False
     await rbac_repo.set_user_roles(db, user.id, [role])
-    await db.commit()
+    if commit:
+        await db.commit()
+    else:
+        await db.flush()
     await _invalidate_user_cache(user.id)
     return True
 
 
 async def set_user_roles(db: AsyncSession, user: User, role_codes: list[str]) -> None:
-    """按给定 code 列表整组替换用户的角色；未知 code 自动忽略。"""
-    roles: list[Role] = []
-    for code in role_codes:
-        role = await rbac_repo.get_role_by_code(db, code)
-        if role is not None:
-            roles.append(role)
+    """按给定 code 列表整组替换用户的角色；未知 code 自动忽略。
+
+    批量取角色：逐个 get_role_by_code 时一次授予 N 个角色要打 N 次串行查询
+    （role_codes 上限 50），改成一条 IN 查询。
+    """
+    roles = await rbac_repo.get_roles_by_codes(db, role_codes)
     await rbac_repo.set_user_roles(db, user.id, roles)
     await db.commit()
     await _invalidate_user_cache(user.id)

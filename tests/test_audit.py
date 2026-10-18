@@ -134,6 +134,52 @@ def test_login_failure_audited(client):
     assert data["items"][0]["target_id"] == USER_PAYLOAD["email"]
 
 
+def test_login_failure_with_overlong_email_is_still_audited(client):
+    """超长邮箱的失败登录也要留痕：target_id 列宽只有 64，邮箱最长 254。
+
+    不截断会撞 MySQL 的 DataError(1406)，而审计写入失败是被 fail-safe 的 except
+    吞掉的——攻击者只要把邮箱填长，撞库记录就一条都不落库，与「登录失败要留痕」
+    的设计正面冲突。（SQLite 不强制列宽，这条用例在 MySQL 轮次才会真正生效。）
+    """
+    token = _admin_token(client)
+    client.cookies.clear()
+
+    long_email = "a" * 200 + "@test.com"
+    bad = client.post(
+        "/api/v1/auth/login", json={"email": long_email, "password": "wrong-password"}
+    )
+    assert bad.status_code in (401, 422)
+
+    data = _logs(client, token, action=ACTION_LOGIN_FAILED)
+    assert data["total"] == 1
+    # 留痕存在，且 target_id 已被截断到列宽以内
+    assert data["items"][0]["target_id"] == long_email[:64]
+
+
+def test_audit_uses_its_own_session(client, monkeypatch):
+    """审计不再复用请求的会话：它自己开会话、自己提交。
+
+    此前 `record(db)` 直接在业务会话上 commit / rollback：commit 会提前提交业务
+    事务，rollback 会连带丢弃尚未提交的业务改动，与「不影响业务结果」的承诺相反。
+    """
+    from app.services import audit as audit_service
+
+    seen: list[object] = []
+
+    real_factory = audit_service.AsyncSessionLocal
+
+    def _spying_factory():
+        ctx = real_factory()
+        seen.append(ctx)
+        return ctx
+
+    monkeypatch.setattr(audit_service, "AsyncSessionLocal", _spying_factory)
+    token = _admin_token(client)
+    assert _logs(client, token, action=ACTION_CREATE_USER)["total"] >= 1
+    # 审计确实自己开了会话——而不是用请求链路上的那个
+    assert seen, "审计未使用独立会话"
+
+
 def test_member_delete_audited(client):
     """会员注销留痕，actor_type 为 member。"""
     assert client.post("/api/v1/member/register", json=MEMBER_PAYLOAD).status_code == 200

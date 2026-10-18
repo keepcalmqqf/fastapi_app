@@ -170,13 +170,44 @@ class FakeStreamRedis:
     async def expire(self, key, ttl):
         return True
 
+    def pipeline(self):
+        return _FakeStreamPipeline(self)
+
     async def aclose(self):
         pass
 
 
-@pytest.fixture
+class _FakeStreamPipeline:
+    """最小 pipeline 实现，供 `_recent_from_redis` 的批量读取路径使用。
+
+    与 conftest 的 `_FakePipeline` 同思路：没有它，任务模块的批量分支在测试里会
+    抛 AttributeError 静默降级到逐条读取，批量路径永远测不到。
+    """
+
+    def __init__(self, client) -> None:
+        self._client = client
+        self._ops: list = []
+
+    def hgetall(self, key):
+        self._ops.append(key)
+        return self
+
+    async def execute(self):
+        results = [await self._client.hgetall(key) for key in self._ops]
+        self._ops.clear()
+        return results
+
+
+@pytest.fixture(autouse=True)
 def clean_registry():
-    """快照并恢复 task_manager 注册表，避免 worker 用例污染全局。"""
+    """快照并恢复 task_manager 注册表，避免 worker 用例污染全局。
+
+    必须 autouse：本模块的 worker 用例靠 `task_manager.register(...)` 注入处理器，
+    一旦某个用例忘了显式声明该夹具，它注册的处理器就会泄漏给后续用例；而
+    `tasks.py:292` 对「注册表为空」和「注册表非空但查不到」的处理分支不同，
+    泄漏会静默改变别人的断言路径。显式声明的方式已经漏过（毒消息用例就漏了），
+    改成强制生效。
+    """
     saved = dict(task_manager._registry)
     yield
     task_manager._registry.clear()
@@ -268,7 +299,60 @@ def test_redis_recent_index_lists_latest_jobs(redis_backend):
     assert _run(mgr.recent(10)) == []
 
 
-def test_worker_process_success(redis_backend, clean_registry):
+def test_redis_recent_reads_hashes_in_one_batch(redis_backend):
+    """结果哈希要走批量读取：逐条 hgetall 时 limit=100 就是 100 次串行往返。"""
+    fake = FakeStreamRedis()
+    mgr = _mk_manager(fake)
+    job_ids: list[str] = []
+
+    async def scenario() -> None:
+        for i in range(3):
+            job_ids.append(await mgr.submit_named("send_welcome_email", i))
+            await asyncio.sleep(0.01)
+
+    _run(scenario())
+
+    batches: list[int] = []
+
+    async def _spy_hgetall(keys):
+        # 记录每次批量的键数：批量路径下只有 1 次调用，逐条路径下是 N 次
+        batches.append(len(keys))
+        return [await fake.hgetall(k) for k in keys]
+
+    mgr._hgetall_batch = _spy_hgetall  # type: ignore[method-assign]
+    items = _run(mgr.recent(10))
+    assert [item["job_id"] for item in items] == list(reversed(job_ids))
+    assert batches == [3], f"期望一次批量取回全部哈希，实际分批: {batches}"
+
+
+def test_redis_recent_falls_back_when_batch_fails(redis_backend):
+    """批量读取失败要退回逐条，且只丢失败的那条，不让整个列表变空。"""
+    fake = FakeStreamRedis()
+    mgr = _mk_manager(fake)
+    job_ids: list[str] = []
+
+    async def scenario() -> None:
+        for i in range(3):
+            job_ids.append(await mgr.submit_named("send_welcome_email", i))
+            await asyncio.sleep(0.01)
+
+    _run(scenario())
+
+    async def _broken_batch(_keys):
+        return None  # 与 _hgetall_batch 失败时的约定一致：返回 None 触发降级
+
+    mgr._hgetall_batch = _broken_batch  # type: ignore[method-assign]
+    items = _run(mgr.recent(10))
+    assert [item["job_id"] for item in items] == list(reversed(job_ids))
+
+    # 结果哈希 TTL 到期是常态：缺一条只丢该条，其余照常展示
+    expired_key = f"task:result:{job_ids[0]}"
+    fake.hashes.pop(expired_key)
+    items = _run(mgr.recent(10))
+    assert [item["job_id"] for item in items] == [job_ids[2], job_ids[1]]
+
+
+def test_worker_process_success(redis_backend):
     fake = FakeStreamRedis()
     task_manager.register("ok_task", _ok_handler)
     payload = _payload("j1", "ok_task", args=[7])
@@ -284,7 +368,7 @@ def test_worker_process_success(redis_backend, clean_registry):
     assert fake.groups[(_STREAM, _GROUP)]["pending"] == {}
 
 
-def test_worker_process_retry_then_success(redis_backend, clean_registry):
+def test_worker_process_retry_then_success(redis_backend):
     fake = FakeStreamRedis()
     calls: list[int] = []
     task_manager.register("flaky_task", _make_flaky(calls))
@@ -308,7 +392,7 @@ def test_worker_process_retry_then_success(redis_backend, clean_registry):
     assert fake.hashes["task:result:j2"]["state"] == "success"
 
 
-def test_worker_process_failure_exhausted(redis_backend, clean_registry):
+def test_worker_process_failure_exhausted(redis_backend):
     fake = FakeStreamRedis()
     task_manager.register("bad_task", _bad_handler)
     payload = _payload("j3", "bad_task")
@@ -323,7 +407,7 @@ def test_worker_process_failure_exhausted(redis_backend, clean_registry):
     assert fake.groups[(_STREAM, _GROUP)]["pending"] == {}
 
 
-def test_worker_process_unknown_task(redis_backend, clean_registry):
+def test_worker_process_unknown_task(redis_backend):
     fake = FakeStreamRedis()
     payload = _payload("j4", "missing_task")
     eid = "1000-1"
@@ -344,7 +428,7 @@ def test_worker_process_poison_message(redis_backend):
     assert fake.hashes == {}
 
 
-def test_worker_consumer_processes_message(redis_backend, clean_registry):
+def test_worker_consumer_processes_message(redis_backend):
     fake = FakeStreamRedis()
     processed: list[int] = []
     stop = asyncio.Event()

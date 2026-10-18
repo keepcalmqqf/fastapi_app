@@ -5,6 +5,7 @@ from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_SECRET_KEY = "dev-only-secret-key-please-change-in-production"
+_DEV_MYSQL_PASSWORD = "123456"
 
 # 允许的 JWT 签名算法（对称 HMAC 系列，防止误配 none 导致签名校验失效）
 _ALLOWED_JWT_ALGORITHMS = ("HS256", "HS384", "HS512")
@@ -31,7 +32,7 @@ class Settings(BaseSettings):
     MYSQL_HOST: str = ""
     MYSQL_PORT: int = 3306
     MYSQL_USER: str = "root"
-    MYSQL_PASSWORD: str = "123456"
+    MYSQL_PASSWORD: str = _DEV_MYSQL_PASSWORD
     MYSQL_DATABASE: str = "fastapi_db"
 
     # 数据库连接池（仅应用运行时生效，Alembic 迁移走 NullPool 不受影响）
@@ -63,15 +64,32 @@ class Settings(BaseSettings):
 
     # 邮箱验证：开关关闭时邮箱验证仅作留档，不影响登录
     REQUIRE_EMAIL_VERIFICATION: bool = False
+    # 注册接口是否直接回 409 告知「邮箱已被注册」：默认关闭。
+    # 开着等于给匿名请求者一个「某邮箱是否已注册」的查询接口，与登录侧刻意做的
+    # 「不泄露账号状态」口径相反。关闭后改为返回统一文案，并向该邮箱投递一封
+    # 「账号已存在」提示邮件——真实用户拿到可操作的引导，攻击者拿不到区分信号。
+    # 仅在确认业务确实需要前端即时报错时显式开启。
+    REGISTER_REVEAL_EXISTING_EMAIL: bool = False
     EMAIL_VERIFY_TOKEN_EXPIRE_HOURS: int = 24
     # 验证链接的基础地址（前端页面地址），邮件里拼成 {base}?token=xxx
     EMAIL_VERIFY_URL_BASE: str = "http://localhost:5173/verify-email"
 
-    # 登录防爆破：同一账号连续失败达阈值后锁定若干秒；来源 IP 维度默认关闭，
-    # 置为正数可同时限制同一出口的撞库（IP 层已有全局限流兜底，谨慎叠加）
+    # 登录防爆破：同一账号连续失败达阈值后锁定若干秒；来源 IP 维度另有阈值，
+    # 两个维度任一触顶即锁定。
+    #
+    # IP 维度默认开启（阈值放宽到账号维度的 4 倍）：只按账号计数时，攻击者每次换一个
+    # 邮箱就能让计数永远归零，防爆破形同虚设——而登录/注册都会跑满一次 Argon2，
+    # 是天然的 CPU 打满面。阈值放宽是因为 NAT/办公网出口下多个正常用户共用一个 IP。
+    # 反代部署必须同时开启 TRUST_X_FORWARDED_FOR，否则所有人共享网关 IP，
+    # 一个人的失败会连坐其余用户。
     LOGIN_MAX_FAILURES: int = 5
     LOGIN_LOCKOUT_SECONDS: int = 900
-    LOGIN_IP_MAX_FAILURES: int = 0
+    LOGIN_IP_MAX_FAILURES: int = 20
+
+    # 是否信任 X-Forwarded-For / X-Real-IP 取真实客户端 IP。
+    # 仅在确认服务前方是自己的反代/Nginx/Ingress 时才开启：直接暴露在公网时开启，
+    # 请求方可以任意伪造该头，审计留痕与 IP 维度防爆破都会失真。
+    TRUST_X_FORWARDED_FOR: bool = False
 
     # 空库自举开关（None 时 DEV 开、PROD 关）：关闭后建号一律要求有效后台令牌。
     # PROD 下开放意味着服务首次启动后任何人都能抢建管理员，故默认关闭。
@@ -106,6 +124,11 @@ class Settings(BaseSettings):
     WEBSOCKET_PATH: str = "/ws"
     # 连接是否强制鉴权：关闭则允许匿名连接（仍走同一端点，仅不校验令牌）
     WEBSOCKET_AUTH_REQUIRED: bool = True
+    # 允许握手的令牌受众（aud，逗号分隔）：默认只放行后台管理员令牌。
+    # 后台管理员与会员是两套账号体系、id 各自独立自增，不校验 aud 会让
+    # admin id=1 与 member id=1 在 WS 侧完全无法区分，按 user_id 判权的
+    # 下游逻辑随之串号；会员令牌也能直接进入后台推送通道。
+    WEBSOCKET_AUDIENCES: str = "admin"
     # 单实例最大并发连接数；达上限后新连接以 1013（稍后重试）拒绝。
     # 多实例部署需在前面挂 LB/网关做全局限流，本上限只约束单进程。
     WEBSOCKET_MAX_CONNECTIONS: int = 1000
@@ -226,10 +249,17 @@ class Settings(BaseSettings):
         if not self.REDIS_HOST:
             self.REDIS_HOST = "redis" if is_prod else "127.0.0.1"
         if is_prod:
-            if self.SECRET_KEY == _DEV_SECRET_KEY:
+            if not self.SECRET_KEY or self.SECRET_KEY == _DEV_SECRET_KEY:
                 raise ValueError("PROD 模式必须通过环境变量设置 SECRET_KEY")
-            if self.MYSQL_PASSWORD == "123456":
+            # 空串必须一并拒绝：compose 会把 .env 里漏配的 ${MYSQL_PASSWORD} 替换成
+            # 空串，只做等值比较时 "" != "123456" 会让校验通过，生产库以 root 空密码上线。
+            # 漏配是比沿用默认值更容易发生、也更难发现的一类错误。
+            if not self.MYSQL_PASSWORD or self.MYSQL_PASSWORD == _DEV_MYSQL_PASSWORD:
                 raise ValueError("PROD 模式必须通过环境变量设置 MYSQL_PASSWORD")
+            # Redis 同理：空密码意味着 refresh jti、令牌黑名单、限流计数全部裸奔，
+            # 且应用侧无密码连不上带 --requirepass 的 Redis，表现为全员刷新令牌 401
+            if not self.REDIS_PASSWORD:
+                raise ValueError("PROD 模式必须通过环境变量设置 REDIS_PASSWORD")
             # 空串比 None 更危险：compose 的 ${METRICS_TOKEN} 在 .env 漏配时会被替换成
             # 空串，鉴权判定为「未配置」从而静默把 /metrics 变成公开端点
             if self.ENABLE_METRICS and not self.METRICS_TOKEN:
@@ -264,6 +294,11 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def websocket_audience_list(self) -> list[str]:
+        """允许握手的受众列表；配置为空时视为「不限制」，保持向后兼容。"""
+        return [o.strip() for o in self.WEBSOCKET_AUDIENCES.split(",") if o.strip()]
 
     @property
     def i18n_locale_list(self) -> list[str]:

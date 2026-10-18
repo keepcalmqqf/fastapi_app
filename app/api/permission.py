@@ -46,7 +46,6 @@ async def create_permission(
     if created is None:
         raise HTTPException(status_code=409, detail="权限 code 已存在")
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_CREATE_USER,

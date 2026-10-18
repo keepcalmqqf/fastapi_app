@@ -1,4 +1,5 @@
 import logging
+import weakref
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
@@ -33,12 +34,42 @@ def _missing_internals(limiter: Any) -> list[str]:
     return [name for name in _REQUIRED_INTERNALS if not hasattr(limiter, name)]
 
 
+# 路由匹配结果缓存：路由表在启动后就不再变化，而 `route.matches` 每次都要编译正则，
+# 放在最外层中间件里逐个请求遍历全表是纯浪费。按 app 实例分桶（WeakKeyDictionary
+# 让缓存随 app 一起回收，测试里大量临时 app 不会堆积）。
+# key 含 scope type/method/path 三项：本项目的路由只由这三者决定，没有按 Host 或
+# 其它请求头分流的路由；哪天加了，这里要把对应字段也纳入 key。
+_ROUTE_MATCH_CACHE: "weakref.WeakKeyDictionary[FastAPI, dict[tuple[str, str, str], bool]]" = (
+    weakref.WeakKeyDictionary()
+)
+_ROUTE_MATCH_CACHE_MAX = 4096
+
+
 def _matches_api_route(app: FastAPI, scope: MutableMapping[str, Any]) -> bool:
     """路径是否命中已注册的 API 路由；SPA / 静态资源（Mount）不计入限流。
 
     静态产物（/assets/*.js 等）单次页面加载就有十几个请求，若一并限流，
     前端会因为加载 chunk 被限而弹出「请求过于频繁」，因此只对 API 路径计限。
     """
+    key = (
+        str(scope.get("type", "")),
+        str(scope.get("method", "")),
+        str(scope.get("path", "")),
+    )
+    cache = _ROUTE_MATCH_CACHE.setdefault(app, {})
+    if len(cache) >= _ROUTE_MATCH_CACHE_MAX:
+        # 缓存没有按路由收敛的入口，随机路径（扫描器、伪造 prefix）会让它无限增长，
+        # 这里整体丢弃重建——命中率短暂下降，总比把内存交出去强。
+        cache.clear()
+    cached = cache.get(key)
+    if cached is None:
+        cached = _scan_api_routes(app, scope)
+        cache[key] = cached
+    return cached
+
+
+def _scan_api_routes(app: FastAPI, scope: MutableMapping[str, Any]) -> bool:
+    """遍历路由表实测一次，结果交给 `_matches_api_route` 缓存。"""
     for route in app.routes:
         if isinstance(route, Mount):
             continue
@@ -126,6 +157,28 @@ def _downgrade_to_memory(app: FastAPI, limiter: Limiter) -> None:
         "限流共享存储不可用，本进程已降级为内存计数：多 worker 下实际阈值放大为 RATE_LIMIT × "
         "worker 数；存储恢复后需重启进程生效"
     )
+
+
+async def aclose(app: FastAPI) -> None:
+    """关闭限流插件自己持有的存储连接（Redis 连接池）。
+
+    slowapi 的 Limiter 内部维护独立的 Redis 连接池，不在 lifespan 管理的
+    `app.state.redis` 里——不显式关就会在每个进程里留下一份未释放的连接。
+    降级时替换掉的旧 limiter 已被丢弃，这里只关当前挂在 state 上的那个。
+    """
+    limiter: Limiter | None = getattr(app.state, "limiter", None)
+    if limiter is None:
+        return
+    storage = getattr(limiter, "_storage", None)
+    closer = getattr(storage, "close", None) or getattr(storage, "aclose", None)
+    if closer is None:
+        return
+    try:
+        result = closer()
+        if hasattr(result, "__await__"):
+            await result
+    except Exception:
+        logger.warning("关闭限流存储连接失败", exc_info=True)
 
 
 def setup(app: FastAPI) -> None:

@@ -1,6 +1,25 @@
+import logging
+
 from fastapi import FastAPI
 
 from app.core.settings import settings
+
+logger = logging.getLogger("fastapi_app")
+
+
+async def aclose_plugins(app: FastAPI) -> None:
+    """释放插件自己持有的外部资源（不走 lifespan 管理的那些连接）。
+
+    只有持有独立连接池的插件需要实现 `aclose(app)`。每一步独立容错：
+    某一步抛异常不能跳过其余清理。
+    """
+    if settings.ENABLE_RATE_LIMIT:
+        from app.plugins import rate_limit
+
+        try:
+            await rate_limit.aclose(app)
+        except Exception:
+            logger.warning("关闭限流插件资源失败", exc_info=True)
 
 
 def setup_plugins(app: FastAPI) -> None:

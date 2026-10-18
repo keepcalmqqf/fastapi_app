@@ -31,6 +31,17 @@ async def send_verification(*, aud: str, subject_id: int, email: str) -> None:
         logger.warning("验证邮件投递失败: aud=%s id=%s", aud, subject_id, exc_info=True)
 
 
+async def notify_account_exists(email: str) -> None:
+    """注册撞上已注册邮箱时的提示邮件。
+
+    投递失败只记日志：这里只是给真实用户的引导，不能反过来让注册请求失败。
+    """
+    try:
+        await mailer.send_account_exists_email(email)
+    except Exception:
+        logger.warning("账号已存在提示邮件投递失败", exc_info=True)
+
+
 async def verify(db: AsyncSession, token: str, *, aud: str, loader: Any, label: str) -> Any:
     """校验验证令牌并把对应账号标记为已验证。
 

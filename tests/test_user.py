@@ -72,6 +72,62 @@ def test_create_user_duplicate_email(client):
     assert resp.json()["code"] == 409
 
 
+def test_create_user_integrity_error_rolls_back_to_none(monkeypatch):
+    """并发撞唯一约束（预检查通过、flush 才失败）时回滚并返回 None。
+
+    member 侧由「软删后重建」覆盖了这条路径，admin 侧此前只测到
+    `get_user_by_email` 的预检查分支——`db.rollback()` 这段回滚逻辑完全没有回归
+    保护：回滚失败、或回滚后又误返回用户对象，都不会被发现。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from app.repositories import user as user_repo
+    from app.schemas.user import CreateUser
+    from app.services import user as user_service
+
+    async def _not_found(*_args, **_kwargs):
+        # 并发下另一个事务刚插入但尚未提交，本事务的预检查看不到
+        return None
+
+    async def _duplicate(*_args, **_kwargs):
+        raise IntegrityError("INSERT INTO user ...", {}, Exception("Duplicate entry"))
+
+    monkeypatch.setattr(user_repo, "get_user_by_email", _not_found)
+    monkeypatch.setattr(user_repo, "create_user", _duplicate)
+
+    data = CreateUser(**USER_PAYLOAD)
+    assert run_db(lambda db: user_service.create_user(db, data)) is None
+
+
+def test_bootstrap_rolls_back_as_a_whole(client, monkeypatch):
+    """自举中途失败要整体回滚，不留「有用户无角色」的残局。
+
+    拆成多个事务时，建用户的那次提交再也撤销不了，而 `needs_bootstrap` 只判
+    users 表是否为空——残局下它恒为 False，自举端点从此永久 409。
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from app.services import rbac as rbac_service
+
+    async def _boom(db, *_args, **_kwargs):
+        raise IntegrityError("INSERT INTO permission ...", {}, Exception("Duplicate entry"))
+
+    monkeypatch.setattr(rbac_service, "ensure_seeded", _boom)
+
+    resp = client.post("/api/v1/auth/bootstrap", json=USER_PAYLOAD)
+    assert resp.status_code == 409, resp.text
+
+    async def _count(db) -> int:
+        from sqlalchemy import func, select
+
+        from app.models import User
+
+        return await db.scalar(select(func.count()).select_from(User)) or 0
+
+    # 用户行没有被留下：否则 needs_bootstrap 会永远返回 False
+    assert run_db(_count) == 0
+
+
 def test_create_user_validation_error(client):
     resp = client.post("/api/v1/auth/bootstrap", json={**USER_PAYLOAD, "name": "张"})
     assert resp.status_code == 422

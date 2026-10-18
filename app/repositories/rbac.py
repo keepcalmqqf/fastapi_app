@@ -54,6 +54,18 @@ async def get_role_by_code(db: AsyncSession, code: str) -> Role | None:
     return await db.scalar(select(Role).where(Role.code == code, Role.deleted_at.is_(None)))
 
 
+async def get_roles_by_codes(db: AsyncSession, codes: list[str]) -> list[Role]:
+    """按 code 批量取角色（软删不计）。
+
+    供整组授权使用：逐个 get_role_by_code 会让「一次授予 50 个角色」变成 50 次
+    串行往返，而这里一条 IN 查询即可。
+    """
+    if not codes:
+        return []
+    result = await db.scalars(select(Role).where(Role.code.in_(codes), Role.deleted_at.is_(None)))
+    return list(result.all())
+
+
 async def get_role_by_id(db: AsyncSession, role_id: int, with_perms: bool = False) -> Role | None:
     stmt = select(Role).where(Role.id == role_id, Role.deleted_at.is_(None))
     if with_perms:
@@ -156,11 +168,12 @@ async def add_role_permissions(db: AsyncSession, role: Role, permissions: list[P
         )
     )
     known = {r[0] for r in existing.all()}
-    for perm in permissions:
-        if perm.id in known:
-            continue
+    missing = [p for p in permissions if p.id not in known]
+    if missing:
+        # 批量插入：逐条 execute 会让「一次授权 200 个权限点」变成 200 次串行往返
         await db.execute(
-            role_permission_table.insert().values(role_id=role.id, permission_id=perm.id)
+            role_permission_table.insert(),
+            [{"role_id": role.id, "permission_id": p.id} for p in missing],
         )
     await db.flush()
 
@@ -170,9 +183,12 @@ async def set_role_permissions(db: AsyncSession, role: Role, permissions: list[P
     await db.execute(
         delete(role_permission_table).where(role_permission_table.c.role_id == role.id)
     )
-    for perm in permissions:
+    if permissions:
+        # 一条多行 INSERT 代替 N 次往返：permission_codes 上限 200，逐条插会串行
+        # 打满 201 次（先删后插），全部时间都耗在网络往返上
         await db.execute(
-            role_permission_table.insert().values(role_id=role.id, permission_id=perm.id)
+            role_permission_table.insert(),
+            [{"role_id": role.id, "permission_id": p.id} for p in permissions],
         )
     await db.flush()
 
@@ -180,6 +196,9 @@ async def set_role_permissions(db: AsyncSession, role: Role, permissions: list[P
 async def set_user_roles(db: AsyncSession, user_id: int, roles: list[Role]) -> None:
     """整组替换某用户的角色（先清后插，调用方负责事务提交）。"""
     await db.execute(delete(user_role_table).where(user_role_table.c.user_id == user_id))
-    for role in roles:
-        await db.execute(user_role_table.insert().values(user_id=user_id, role_id=role.id))
+    if roles:
+        await db.execute(
+            user_role_table.insert(),
+            [{"user_id": user_id, "role_id": r.id} for r in roles],
+        )
     await db.flush()

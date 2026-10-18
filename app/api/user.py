@@ -71,7 +71,6 @@ async def _do_create(
     if created is None:
         raise HTTPException(status_code=409, detail="邮箱已被注册")
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=actor.id,
         action=ACTION_CREATE_USER,
@@ -159,7 +158,6 @@ async def update_user(
     if fields.get("is_active") is False:
         await revoke_subject("admin", str(user_id), redis)
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_UPDATE_USER,
@@ -186,7 +184,6 @@ async def delete_user(
     # 软删除后撤销该账号全部令牌；软删不释放邮箱唯一约束，该账号不会再产生新会话
     await revoke_subject("admin", str(user_id), redis)
     await audit_service.record(
-        db,
         actor_type="admin",
         actor_id=current_user.id,
         action=ACTION_DELETE_USER,

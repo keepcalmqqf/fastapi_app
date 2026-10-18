@@ -34,6 +34,70 @@ class _ReadOnlyRedis:
         raise ConnectionError("Redis 写入失败（测试模拟）")
 
 
+def test_cached_key_is_stable_across_calls(cache_redis):
+    """入参不可 JSON 序列化时不缓存，而不是建出一个永不命中的键。
+
+    此前 `_build_key` 用 `default=str` 兜底：AsyncSession / Request / ORM 对象会被
+    转成 `<...object at 0x7f9c...>`，**内存地址进了哈希输入**——带 `db=` 参数的
+    函数每次调用拿到的键都不同，缓存命中率恒为 0，却照样付一遍 dumps + sha256。
+    """
+
+    class _Session:
+        """模拟不可序列化的入参（如 AsyncSession）。"""
+
+    calls: list[bool] = []
+
+    @cache_plugin.cached("t", ttl=60)
+    async def fn(db: _Session) -> dict:
+        calls.append(True)
+        return {"ok": True}
+
+    assert asyncio.run(fn(_Session())) == {"ok": True}
+    assert asyncio.run(fn(_Session())) == {"ok": True}
+    # 两次都执行了函数体 —— 说明它知道自己缓存不了，而不是白白算了个假键
+    assert calls == [True, True]
+    assert len(cache_redis._data) == 0
+
+
+def test_cached_key_includes_function_name(cache_redis):
+    """两个共用同一 prefix 的函数不互相串数据。"""
+
+    @cache_plugin.cached("shared", ttl=60)
+    async def alpha(x: int) -> str:
+        return f"alpha:{x}"
+
+    @cache_plugin.cached("shared", ttl=60)
+    async def beta(x: int) -> str:
+        return f"beta:{x}"
+
+    assert asyncio.run(alpha(1)) == "alpha:1"
+    # 键里若不含函数名，这里会命中 alpha 写下的值
+    assert asyncio.run(beta(1)) == "beta:1"
+
+
+def test_cached_skips_values_that_cannot_round_trip(cache_redis):
+    """命中与未命中的返回类型必须一致：不能无损往返 JSON 的值一律不缓存。
+
+    命中时返回的是 `json.loads` 的结果，未命中时是原始对象。set 会变成 list、
+    datetime 会变成 str —— 那类 bug 只在缓存命中的那一刻才出现，极难复现。
+    """
+    calls: list[bool] = []
+
+    @cache_plugin.cached("t", ttl=60)
+    async def fn() -> set:
+        calls.append(True)
+        return {"a", "b"}
+
+    first = asyncio.run(fn())
+    second = asyncio.run(fn())
+    assert first == {"a", "b"}
+    # 两次都返回 set：若缓存了，第二次会变成 list
+    assert second == {"a", "b"}
+    assert isinstance(second, set)
+    assert calls == [True, True]
+    assert len(cache_redis._data) == 0
+
+
 @pytest.fixture()
 def cache_redis(monkeypatch: pytest.MonkeyPatch):
     """把 cache 插件的模块级 Redis 客户端指向内存 FakeRedis（退出时自动还原）。"""

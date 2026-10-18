@@ -137,8 +137,13 @@ class TaskManager:
     def _is_redis(self) -> bool:
         return settings.TASK_BACKEND.strip().lower() == "redis"
 
-    def set_redis(self, client: Redis | None) -> None:
-        """注入 Redis 客户端（测试用；生产由 start() 内部按配置自建）。"""
+    def set_redis(self, client: Any) -> None:
+        """注入 Redis 客户端（测试用；生产由 start() 内部按配置自建）。
+
+        入参放宽到 Any 的原因同 Scheduler.set_redis：测试注入的假实现只实现插件用到的
+        Streams/哈希命令，按完整 Redis 协议标注会让每个注入点都报错。内部
+        `self._redis` 仍按真实客户端标注，生产路径的类型检查不受影响。
+        """
         self._redis = client
 
     async def _ensure_group(self, redis: Redis) -> None:
@@ -543,7 +548,13 @@ class TaskManager:
         ]
 
     async def _recent_from_redis(self, limit: int) -> list[dict[str, Any]]:
-        """redis 后端的最近记录：先取索引里的 job_id，再逐条读结果哈希。"""
+        """redis 后端的最近记录：先取索引里的 job_id，再批量读结果哈希。
+
+        逐条 hgetall 时 limit=100 意味着 100 次串行往返，观测接口的延迟几乎全部
+        耗在网络上；改 pipeline 一次性下发。批量失败（Redis 抖动、代理不支持
+        pipeline）时退回逐条读取：结果哈希 TTL 到期被清掉是常态，单条缺失只丢该
+        条，不该让整个列表变空。
+        """
         if self._redis is None:
             return []
         try:
@@ -551,17 +562,37 @@ class TaskManager:
         except Exception:  # noqa: BLE001 - 观测接口降级为空列表，不 500
             logger.warning("读取最近任务索引失败", exc_info=True)
             return []
-        items: list[dict[str, Any]] = []
-        for raw_id in job_ids:
-            job_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
-            try:
-                data = await self._redis.hgetall(f"{_RESULT_PREFIX}{job_id}")
-            except Exception:  # noqa: BLE001 - 单条读取失败跳过，其余照常展示
-                continue
-            if not data:
-                continue
-            items.append({"job_id": job_id, "task_id": job_id, **data})
-        return items
+        ids = [raw.decode() if isinstance(raw, bytes) else str(raw) for raw in job_ids]
+        keys = [f"{_RESULT_PREFIX}{job_id}" for job_id in ids]
+        batch = await self._hgetall_batch(keys)
+        if batch is None:
+            batch = [await self._hgetall_one(key) for key in keys]
+        return [
+            {"job_id": job_id, "task_id": job_id, **data}
+            for job_id, data in zip(ids, batch, strict=True)
+            if data
+        ]
+
+    async def _hgetall_batch(self, keys: list[str]) -> list[dict[str, Any]] | None:
+        """一次往返取回全部结果哈希；批量不可用返回 None，交由调用方降级。"""
+        if not keys:
+            return []
+        assert self._redis is not None
+        try:
+            pipe = self._redis.pipeline()
+            for key in keys:
+                pipe.hgetall(key)
+            return list(await pipe.execute())
+        except Exception:  # noqa: BLE001 - 批量路径是优化，失败不影响正确性
+            logger.warning("批量读取任务结果失败，退回逐条读取", exc_info=True)
+            return None
+
+    async def _hgetall_one(self, key: str) -> dict[str, Any]:
+        assert self._redis is not None
+        try:
+            return await self._redis.hgetall(key) or {}
+        except Exception:  # noqa: BLE001 - 单条读取失败跳过，其余照常展示
+            return {}
 
     def reset(self) -> None:
         """清空处理器注册表与记录（仅供测试与开发调试，不影响在途 worker）。"""
@@ -661,6 +692,11 @@ def setup(app: FastAPI) -> None:
         except ValueError as exc:
             # 未注册的具名任务：属调用方参数问题，转 400 而不是让它冒泡成 500
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except asyncio.QueueFull as exc:
+            # 队列满是「过载」不是「故障」：报 500 会让客户端误判为服务端出错，
+            # 而 429 才是可退避重试的语义（TASK_MAX_QUEUE 默认 0 为无界，仅在显式
+            # 配置容量且被打满时触发）
+            raise HTTPException(status_code=429, detail="任务队列已满，请稍后重试") from exc
         return result.ok(
             data=TaskDispatchOut(name=payload.name, job_id=job_id), message="任务已投递"
         )

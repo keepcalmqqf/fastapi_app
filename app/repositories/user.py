@@ -14,6 +14,16 @@ async def count_users(db: AsyncSession) -> int:
     return result or 0
 
 
+async def has_any_user(db: AsyncSession) -> bool:
+    """是否存在任何有效用户（供空库自举判断）。
+
+    用 EXISTS 而非 COUNT(*)：/api/v1/info 免鉴权，每次访问都跑一遍判断，
+    COUNT 会随用户数增长退化成全表扫描，而这里只需要「有/没有」这一个比特。
+    """
+    result = await db.scalar(select(User.id).where(User.deleted_at.is_(None)).limit(1))
+    return result is not None
+
+
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
     return await db.scalar(select(User).where(User.id == user_id, User.deleted_at.is_(None)))
 

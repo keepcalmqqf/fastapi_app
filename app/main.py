@@ -13,12 +13,13 @@ from app.core.middleware import cors_middleware, response_headers_middleware
 from app.core.redis import create_redis
 from app.core.settings import settings
 from app.core.static import SPAStaticFiles
-from app.plugins import setup_plugins
+from app.plugins import aclose_plugins, setup_plugins
 from app.plugins.cache import set_redis
 from app.plugins.scheduler import scheduler
 from app.plugins.tasks import task_manager
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("fastapi_app")
 
 
 @asynccontextmanager
@@ -26,21 +27,47 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     redis = create_redis()
     app.state.redis = redis
     set_redis(redis)
-    # 异步任务插件：Redis/DB 就绪后再启动 worker；关闭时先停 worker（在 Redis 仍可用时
-    # 让在途任务自然收尾），最后才关闭资源
-    if settings.ENABLE_TASKS:
-        await task_manager.start()
-    # 定时任务插件在 task_manager 之后启动（到点投递依赖它就绪）；关闭时先停调度
-    # （不再产生新投递），再停 task_manager 让在途任务收尾
-    if settings.ENABLE_SCHEDULER:
-        await scheduler.start()
-    yield
-    if settings.ENABLE_SCHEDULER:
-        await scheduler.stop()
-    if settings.ENABLE_TASKS:
-        await task_manager.stop()
-    await redis.aclose()
-    await async_engine.dispose()
+    try:
+        # 异步任务插件：Redis/DB 就绪后再启动 worker；关闭时先停 worker（在 Redis 仍可用时
+        # 让在途任务自然收尾），最后才关闭资源
+        if settings.ENABLE_TASKS:
+            await task_manager.start()
+        # 定时任务插件在 task_manager 之后启动（到点投递依赖它就绪）；关闭时先停调度
+        # （不再产生新投递），再停 task_manager 让在途任务收尾
+        if settings.ENABLE_SCHEDULER:
+            await scheduler.start()
+        yield
+    finally:
+        # 启动阶段在 yield 之前抛异常时，asynccontextmanager 不会执行 yield 之后的
+        # 任何语句——没有 try/finally 就会漏掉 redis.aclose() 与 engine.dispose()，
+        # 连接与后台协程一并泄漏，且启动失败的进程可能残留到进程退出。
+        #
+        # 清理的每一步都独立容错：任一步抛异常只记录，不能跳过其后的清理，否则在途
+        # 任务与连接池会连带泄漏。启动阶段的异常照原样向上传播（只记不吞），这样
+        # 启动失败会显式暴露，而不是带着「配了却没起来」的任务插件静默对外服务。
+        for label, stop in (
+            ("定时任务调度器", scheduler.stop if settings.ENABLE_SCHEDULER else None),
+            ("任务 worker", task_manager.stop if settings.ENABLE_TASKS else None),
+        ):
+            if stop is None:
+                continue
+            try:
+                await stop()
+            except Exception:
+                logger.exception("关闭%s失败，继续清理其余资源", label)
+        # 插件自带的连接池（如限流的 Redis 存储）不在 app.state.redis 里
+        try:
+            await aclose_plugins(app)
+        except Exception:
+            logger.exception("关闭插件资源失败，继续清理其余资源")
+        for label, closer in (
+            ("Redis 客户端", redis.aclose),
+            ("数据库连接池", async_engine.dispose),
+        ):
+            try:
+                await closer()
+            except Exception:
+                logger.exception("关闭%s失败", label)
 
 
 _enable_docs = settings.docs_enabled

@@ -103,16 +103,32 @@ class LoginGuard:
             return
         fail_key = _fail_key(subject)
         try:
-            count = await redis.incr(fail_key)
-            # 首次写入时补 TTL：否则失败计数永久累积，用户永远无法自行恢复
-            if count == 1:
-                await redis.expire(fail_key, self.lockout_seconds)
+            count = await self._incr_with_ttl(redis, fail_key)
             if count >= limit:
-                await redis.set(_lock_key(subject), "1", ex=self.lockout_seconds)
-                await redis.delete(fail_key)
+                pipe = redis.pipeline()
+                pipe.set(_lock_key(subject), "1", ex=self.lockout_seconds)
+                pipe.delete(fail_key)
+                await pipe.execute()
         except Exception:
             # 计数失败只告警：宁可放行也不能让 Redis 故障变成全站登录不可用
             logger.warning("记录登录失败次数失败，本次不计入锁定", exc_info=True)
+
+    @staticmethod
+    async def _incr_with_ttl(redis: Any, key: str) -> int:
+        """自增失败计数并强制 TTL，两条命令必须同批到达。
+
+        分两次下发时，进程若恰好在 INCR 与 EXPIRE 之间退出（滚动发布、OOM、
+        节点驱逐），计数键就永远停在「无 TTL」状态：它不会过期，失败次数无限
+        累加，账号在每次锁定期结束后立刻被重新锁定，用户自己无法恢复，只能
+        等运维手工删键。pipeline 让两命令要么都到要么都不在，不会停在中间态。
+
+        返回值固定为自增后的计数，与 `redis.incr` 一致。
+        """
+        pipe = redis.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, settings.LOGIN_LOCKOUT_SECONDS)
+        results = await pipe.execute()
+        return int(results[0])
 
     async def reset(self, redis: Any, subject: str, ip: str | None = None) -> None:
         """登录成功后清零失败计数与锁定标记（IP 维度保留，避免爆破者借成功登录洗白）。"""

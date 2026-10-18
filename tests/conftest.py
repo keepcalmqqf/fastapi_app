@@ -72,6 +72,83 @@ def run_db(fn: Callable[[AsyncSession], Awaitable[T]]) -> T:
     return asyncio.run(_run())
 
 
+class TestingSessionCtx:
+    """把 service 层 `async with AsyncSessionLocal()` 接到测试库上。"""
+
+    def __init__(self) -> None:
+        self.session = TestingSessionLocal()
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, *exc_info) -> bool:
+        await self.session.close()
+        return False
+
+
+def _testing_session_factory() -> TestingSessionCtx:
+    return TestingSessionCtx()
+
+
+@pytest.fixture(autouse=True)
+def redirect_session_factory(monkeypatch: pytest.MonkeyPatch):
+    """把「自己开会话」的旁路写入接到测试库。
+
+    审计（要独立于业务事务提交）、任务执行历史（fail-safe 旁路）、具名任务
+    （`app.tasks` 的清理任务）都不走 get_db 依赖，而是 `async with AsyncSessionLocal()`
+    自建会话。不替换的话它们会拿 .env 里的 MYSQL_* 去连真实库：本机有库就真写数据
+    （清理任务还是硬删），CI 上则连不存在的库报错，连接超时还会让整个套件卡住。
+
+    必须逐个 patch 各模块的命名空间——它们都是 `from ... import AsyncSessionLocal`
+    的模块级副本，改 `app.core.database` 的原名不会影响已导入的引用。
+    """
+    from app.services import audit as audit_service
+    from app.services import task as task_service
+
+    monkeypatch.setattr(audit_service, "AsyncSessionLocal", _testing_session_factory)
+    monkeypatch.setattr(task_service, "AsyncSessionLocal", _testing_session_factory)
+    monkeypatch.setattr("app.tasks.AsyncSessionLocal", _testing_session_factory)
+    monkeypatch.setattr("app.core.database.AsyncSessionLocal", _testing_session_factory)
+    yield
+
+
+class _FakePipeline:
+    """最小 pipeline 实现：排队命令，`execute()` 时按序一次性下发。
+
+    存在的意义不是「模拟 Redis」，而是让 FakeRedis 能覆盖「两条命令必须同批
+    到达」的原子性路径（如登录失败计数的 INCR+EXPIRE）。没有它，生产代码里的
+    pipeline 分支会在测试中抛 AttributeError 掉进降级逻辑，等于原子性修复永远
+    不被验证。只实现当前用到的命令，缺的按需补。
+    """
+
+    def __init__(self, client: "FakeRedis") -> None:
+        self._client = client
+        self._ops: list[tuple[str, tuple, dict]] = []
+
+    def _queue(self, name: str, *args, **kwargs) -> "_FakePipeline":
+        self._ops.append((name, args, kwargs))
+        return self
+
+    def incr(self, key: str, *args, **kwargs) -> "_FakePipeline":
+        return self._queue("incr", key, *args, **kwargs)
+
+    def expire(self, key: str, *args, **kwargs) -> "_FakePipeline":
+        return self._queue("expire", key, *args, **kwargs)
+
+    def set(self, key: str, value: str, *args, **kwargs) -> "_FakePipeline":
+        return self._queue("set", key, value, *args, **kwargs)
+
+    def delete(self, *keys: str) -> "_FakePipeline":
+        return self._queue("delete", *keys)
+
+    async def execute(self) -> list:
+        results = [
+            await getattr(self._client, name)(*args, **kwargs) for name, args, kwargs in self._ops
+        ]
+        self._ops.clear()
+        return results
+
+
 class FakeRedis:
     """内存版 Redis 客户端，实现测试链路实际用到的接口。"""
 
@@ -94,6 +171,14 @@ class FakeRedis:
 
     async def get(self, key: str) -> str | None:
         return self._data.get(key)
+
+    async def getdel(self, key: str) -> str | None:
+        """取出并删除：刷新令牌轮换靠它保证「一次性使用」的原子性。"""
+        value = self._data.get(key)
+        if value is not None:
+            self._ttl.pop(key, None)
+            del self._data[key]
+        return value
 
     async def exists(self, *keys: str) -> int:
         return sum(1 for key in keys if key in self._data)
@@ -132,6 +217,9 @@ class FakeRedis:
                 del self._data[key]
                 count += 1
         return count
+
+    def pipeline(self) -> _FakePipeline:
+        return _FakePipeline(self)
 
     def scan_iter(self, pattern: str):
         async def _gen():
