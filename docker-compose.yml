@@ -6,15 +6,19 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: 123456
       MYSQL_DATABASE: fastapi_db
+    # 只绑定回环地址：MySQL 是 root/123456 的弱口令，Redis 更是无 AUTH，
+    # 绑到 0.0.0.0 等于把可写的数据服务直接暴露到办公网/公网。
+    # Redis 里存的是 refresh 令牌 jti、令牌黑名单、限流计数与调度锁。
+    # 需要容器内其他服务访问时用 compose 网络，不必开宿主机端口映射。
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
   redis:
     image: redis:7
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
 

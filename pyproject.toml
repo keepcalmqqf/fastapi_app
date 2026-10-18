@@ -54,6 +54,13 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "SIM"]
 # B008: FastAPI 依赖注入惯用法 Depends() 必须写在参数默认值里
 ignore = ["B008"]
 
+[tool.ruff.format]
+# 迁移文件由 alembic 按模板生成（单引号风格），与格式化器的约定不一致，每次
+# autogenerate 都会重新引入未格式化的文件，逐个手改没有意义。
+# 只豁免 format、不豁免 lint：生成的迁移同样可能有未使用导入等问题，
+# ruff check 在那里抓到过真问题（见新增的 created_at 索引迁移）。
+exclude = ["alembic/versions/*.py"]
+
 [tool.mypy]
 python_version = "3.10"
 strict = false

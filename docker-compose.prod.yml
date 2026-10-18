@@ -12,7 +12,10 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$${MYSQL_ROOT_PASSWORD}"]
+      # 单 $ ：由 compose 在宿主侧替换为 .env 的实际值再传给容器。
+      # 写 $$ 会被还原成字面量 ${...}，而 exec 数组形式容器内无 shell 不会二次展开，
+      # 结果是拿字面量当密码 -> 健康检查必然失败 -> 应用容器因 service_healthy 永不启动。
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -28,13 +31,13 @@ services:
     # 启用 AUTH 密码（需在 .env 中设置 REDIS_PASSWORD）
     # appendonly：refresh 令牌的 jti 只存 Redis，默认 RDB 快照丢数据会让全员被登出，
     # 开 AOF 把丢失窗口压到 1 秒
-    command: ["redis-server", "--requirepass", "$${REDIS_PASSWORD}", "--appendonly", "yes"]
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "$${REDIS_PASSWORD}", "ping"]
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 10

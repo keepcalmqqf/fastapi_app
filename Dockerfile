@@ -8,11 +8,17 @@ RUN npm run build
 
 # 使用 Python 3.12 环境进行构建
 FROM python:3.12-slim
-# 安装 tzdata 并固定时区（slim 镜像默认 UTC；apt 安装对已存在包为幂等操作）
+# 时区显式固定为 UTC（slim 镜像本就是 UTC，写出来是为了防止被基础镜像或编排层改掉）。
+# 不能设成本地时区：AGENTS.md 约定「时间源统一为应用侧 UTC」，所有入库与比较都用
+# 带 tz 的 utc_now()；容器 TZ 一旦改成本地时区，日志时间戳、以及任何一处漏写
+# tzinfo 的 datetime.now() 都会与 MySQL 侧（容器未设 TZ，同样 UTC）差 8 小时，
+# 且只在生产环境出现，本地与测试都复现不了。
+# 保留 tzdata 是因为 SCHEDULER_TIMEZONE 等配置经 zoneinfo 解析，缺库会直接抛
+# ZoneInfoNotFoundError（Windows 上踩过同一个坑，见 AGENTS.md）。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
-ENV TZ=Asia/Shanghai
+ENV TZ=UTC
 # 安装 uv（pin 具体版本保证构建可重现）
 COPY --from=ghcr.io/astral-sh/uv:0.12.13 /uv /uvx /bin/
 # 工作目录
