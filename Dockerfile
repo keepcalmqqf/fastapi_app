@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # 使用 Python 3.12 环境进行构建
-FROM python:3.12-slim
+FROM python:3.15-slim
 # 时区显式固定为 UTC（slim 镜像本就是 UTC，写出来是为了防止被基础镜像或编排层改掉）。
 # 不能设成本地时区：AGENTS.md 约定「时间源统一为应用侧 UTC」，所有入库与比较都用
 # 带 tz 的 utc_now()；容器 TZ 一旦改成本地时区，日志时间戳、以及任何一处漏写
